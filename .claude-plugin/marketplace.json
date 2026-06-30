@@ -10,6 +10,11 @@
       "name": "token-eater",
       "source": { "source": "url", "url": "https://github.com/StartupBros-com/token-eater.git", "sha": "1bd6a90be544761cb9eea3d69799da53945a9f9e" },
       "description": "Spend your about-to-expire AI credits on safe, reviewed code cleanup. Just run /token-eater: it tidies your code in an isolated copy, verifies it, reviews it, and opens a draft PR. Never merges."
+    },
+    {
+      "name": "pro-gate",
+      "source": { "source": "url", "url": "https://github.com/StartupBros-com/pro-gate.git", "sha": "b20ce4ba808454b9c0d32d6016601bba31acaeb1" },
+      "description": "Get the deepest final code review from ChatGPT's most powerful model (GPT-5.5 Pro) before you merge. Just run /pro-gate: it reviews your pull request, fixes what it safely can, and comments. Never merges. One-time guided setup. Requires a ChatGPT Pro plan."
     }
   ]
 }
