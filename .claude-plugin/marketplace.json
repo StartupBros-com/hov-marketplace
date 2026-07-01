@@ -13,8 +13,8 @@
     },
     {
       "name": "pro-gate",
-      "source": { "source": "url", "url": "https://github.com/StartupBros-com/pro-gate.git", "sha": "b20ce4ba808454b9c0d32d6016601bba31acaeb1" },
-      "description": "Get the deepest final code review from ChatGPT's most powerful model (GPT-5.5 Pro) before you merge. Just run /pro-gate: it reviews your pull request, fixes what it safely can, and comments. Never merges. One-time guided setup. Requires a ChatGPT Pro plan."
+      "source": { "source": "url", "url": "https://github.com/StartupBros-com/pro-gate.git", "sha": "1e0e334c9bb90ca62e01a98afc04c0f0ccbdfee3" },
+      "description": "Get the deepest final code review from ChatGPT's most powerful model (GPT-5.5 Pro) before you merge. Just run /pro-gate: it reviews your pull request, fixes what it safely can, and comments — never merges. One-time guided setup. Requires a ChatGPT Pro plan."
     }
   ]
 }
