@@ -1,0 +1,33 @@
+name: Validate marketplace
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  syntax:
+    name: Syntax and policy
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@ac593985615ec2ede58e132d2e21d2b1cbd6127c
+      - name: Validate marketplace without network access
+        run: ./scripts/validate-marketplace.sh syntax
+      - name: Run deterministic fixture tests
+        run: ./tests/validate-marketplace.test.sh
+
+  full:
+    name: Pinned sources
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: syntax
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@ac593985615ec2ede58e132d2e21d2b1cbd6127c
+      - name: Validate pinned source payloads
+        run: ./scripts/validate-marketplace.sh full
