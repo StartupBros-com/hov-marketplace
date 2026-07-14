@@ -14,7 +14,7 @@
       "source": {
         "source": "url",
         "url": "https://github.com/StartupBros-com/token-eater.git",
-        "sha": "0bb85911f5d03cfb9df8c3fd428b69931f26ed80"
+        "sha": "3f3ad149abccc0d9771eca6841b0e2100dafd5b7"
       },
       "description": "Spend expiring AI credits on isolated, verified code cleanup that opens a draft pull request and never merges."
     },
@@ -23,7 +23,7 @@
       "source": {
         "source": "url",
         "url": "https://github.com/StartupBros-com/pro-gate.git",
-        "sha": "841baf839bf701a81e8e7cce6b53f380758aedb7"
+        "sha": "a822ba9f9d544d0a8c37cce4bc426ba6e50529a2"
       },
       "description": "Run a final pull request review using the Pro model selected by your ChatGPT account, with guided runtime setup and no automatic merge."
     }

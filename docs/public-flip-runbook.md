@@ -63,9 +63,9 @@ Run once in each tool repository.
 Merge in dependency order:
 
 1. prbot tool-release announcement route and migration.
-2. hov-marketplace catalog and validator.
-3. pro-gate plugin/runtime packaging.
-4. token-eater and pro-gate release trains.
+2. token-eater consent gate and release train.
+3. pro-gate plugin/runtime packaging and release train.
+4. hov-marketplace catalog and validator, pinned to the landed tool commits.
 
 Do not move files from `apps/startupbros/content-staging/vault/` into `apps/startupbros/content/vault/` yet.
 
@@ -146,14 +146,15 @@ gh repo view StartupBros-com/hov-marketplace --json visibility,url
 
 All three responses must report `PUBLIC`.
 
-Immediately switch both train validators to full public-source validation:
+Immediately switch both train validators and hov-marketplace CI to full public-source validation:
 
 ```bash
 gh variable set HOV_MARKETPLACE_VALIDATION_MODE --body full --repo StartupBros-com/token-eater
 gh variable set HOV_MARKETPLACE_VALIDATION_MODE --body full --repo StartupBros-com/pro-gate
+gh variable set HOV_SOURCES_PUBLIC --body true --repo StartupBros-com/hov-marketplace
 ```
 
-Trigger hov-marketplace validation on `main` and require it to pass in full mode.
+Trigger hov-marketplace validation on `main` and require the `Pinned sources` job to pass.
 
 ## Unauthenticated customer install smoke
 

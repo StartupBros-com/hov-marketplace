@@ -30,6 +30,23 @@ is_uint() {
   [[ "$1" =~ ^(0|[1-9][0-9]*)$ ]]
 }
 
+semver_gt() {
+  local left_major left_minor left_patch right_major right_minor right_patch
+  IFS=. read -r left_major left_minor left_patch <<<"${1%%[-+]*}"
+  IFS=. read -r right_major right_minor right_patch <<<"${2%%[-+]*}"
+  (( left_major > right_major )) ||
+    (( left_major == right_major && left_minor > right_minor )) ||
+    (( left_major == right_major && left_minor == right_minor && left_patch > right_patch ))
+}
+
+expected_source_url() {
+  case "$1" in
+    token-eater) printf '%s\n' 'https://github.com/StartupBros-com/token-eater.git' ;;
+    pro-gate) printf '%s\n' 'https://github.com/StartupBros-com/pro-gate.git' ;;
+    *) return 1 ;;
+  esac
+}
+
 validate_expected_inputs() {
   local value
   for value in "$EXPECTED_PLUGIN_VERSION" "$EXPECTED_RELEASE_ID" "$EXPECTED_RELEASE_TAG" "$EXPECTED_SHA" "$EXPECTED_PAYLOAD_PATHS"; do
@@ -83,12 +100,15 @@ validate_shape() {
   duplicates="$(jq -r '[.plugins[].name] | group_by(.) | map(select(length > 1) | .[0]) | join(", ")' "$MANIFEST")"
   [[ -z "$duplicates" ]] || fail "plugin names must be unique: $duplicates"
 
-  while IFS=$'\t' read -r name version release_id release_tag; do
+  while IFS=$'\t' read -r name url version release_id release_tag; do
+    local approved_url
+    approved_url="$(expected_source_url "$name")" || fail "plugin $name is not approved for this marketplace"
+    [[ "$url" == "$approved_url" ]] || fail "plugin $name must use approved source $approved_url"
     [[ -z "$version" ]] && continue
     is_semver "$version" || fail "plugin $name metadata.version is not semver"
     is_uint "$release_id" || fail "plugin $name metadata.releaseId is not an unsigned integer"
     [[ "$release_tag" == "v$version" ]] || fail "plugin $name metadata.releaseTag does not match metadata.version"
-  done < <(jq -r '.plugins[] | [.name, (.metadata.version // ""), (.metadata.releaseId // "" | tostring), (.metadata.releaseTag // "")] | @tsv' "$MANIFEST")
+  done < <(jq -r '.plugins[] | [.name, .source.url, (.metadata.version // ""), (.metadata.releaseId // "" | tostring), (.metadata.releaseTag // "")] | @tsv' "$MANIFEST")
 }
 
 validate_expected_entry() {
@@ -124,11 +144,16 @@ validate_monotonicity() {
   git show "$BASE_REF:$MANIFEST" >"$base_manifest" 2>/dev/null || fail "could not read $MANIFEST from BASE_REF $BASE_REF"
   jq -e . "$base_manifest" >/dev/null 2>&1 || fail "base marketplace manifest is malformed"
 
-  while IFS=$'\t' read -r name current_id base_id; do
+  while IFS=$'\t' read -r name current_id base_id current_version base_version current_sha base_sha current_tag base_tag current_url base_url; do
     [[ -n "$current_id" ]] || fail "plugin $name removed release metadata present at $BASE_REF"
     is_uint "$current_id" && is_uint "$base_id" || fail "plugin $name has non-numeric release metadata"
     (( current_id >= base_id )) || fail "plugin $name releaseId rolled back from $base_id to $current_id"
-  done < <(jq -r --slurpfile current "$MANIFEST" '.plugins[] | select(.metadata.releaseId != null) | .name as $name | [$name, (($current[0].plugins[] | select(.name == $name) | .metadata.releaseId) // "" | tostring), (.metadata.releaseId | tostring)] | @tsv' "$base_manifest")
+    if (( current_id == base_id )); then
+      [[ "$current_version|$current_sha|$current_tag|$current_url" == "$base_version|$base_sha|$base_tag|$base_url" ]] || fail "plugin $name changed immutable metadata for releaseId $current_id"
+    else
+      semver_gt "$current_version" "$base_version" || fail "plugin $name version must increase when releaseId advances"
+    fi
+  done < <(jq -r --slurpfile current "$MANIFEST" '.plugins[] | select(.metadata.releaseId != null) | .name as $name | ($current[0].plugins[] | select(.name == $name)) as $now | [$name, ($now.metadata.releaseId // "" | tostring), (.metadata.releaseId | tostring), ($now.metadata.version // ""), (.metadata.version // ""), $now.source.sha, .source.sha, ($now.metadata.releaseTag // ""), (.metadata.releaseTag // ""), $now.source.url, .source.url] | @tsv' "$base_manifest")
 
   while IFS=$'\t' read -r name current_id base_id; do
     [[ -n "$base_id" ]] && continue

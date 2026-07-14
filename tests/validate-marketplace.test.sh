@@ -96,6 +96,20 @@ write_manifest "$TOKEN_SHA" "$PRO_SHA" 10
 write_manifest "$TOKEN_SHA" "$PRO_SHA" 9
 expect_fail "release metadata rollback" env BASE_REF=HEAD MARKETPLACE_MANIFEST=.claude-plugin/marketplace.json MARKETPLACE_TEST_REMOTE_ROOT="$REMOTE_ROOT" ALLOW_LOCAL_FILE_REMOTES=1 bash -c 'cd "$1" && "$2" syntax' _ "$WORK" "$VALIDATOR"
 
+write_manifest "$TOKEN_SHA" "$PRO_SHA" 11 token-eater 1.2.2 v1.2.2
+expect_fail "newer release id cannot downgrade semver" env BASE_REF=HEAD MARKETPLACE_MANIFEST=.claude-plugin/marketplace.json bash -c 'cd "$1" && "$2" syntax' _ "$WORK" "$VALIDATOR"
+
+write_manifest "$TOKEN_SHA" "$PRO_SHA" 11 token-eater 1.2.3 v1.2.3
+expect_fail "newer release id requires semver increase" env BASE_REF=HEAD MARKETPLACE_MANIFEST=.claude-plugin/marketplace.json bash -c 'cd "$1" && "$2" syntax' _ "$WORK" "$VALIDATOR"
+
+write_manifest "$PRO_SHA" "$PRO_SHA" 10
+expect_fail "equal release id cannot change source" env BASE_REF=HEAD MARKETPLACE_MANIFEST=.claude-plugin/marketplace.json bash -c 'cd "$1" && "$2" syntax' _ "$WORK" "$VALIDATOR"
+
+write_manifest "$TOKEN_SHA" "$PRO_SHA" 10
+jq '(.plugins[] | select(.name == "token-eater") | .source.url) = "https://github.com/attacker/token-eater.git"' "$WORK/.claude-plugin/marketplace.json" > "$TMP/wrong-source.json"
+mv "$TMP/wrong-source.json" "$WORK/.claude-plugin/marketplace.json"
+expect_fail "approved plugin cannot change repository owner" validate syntax
+
 write_manifest "$TOKEN_SHA" "$PRO_SHA" 10 wrong-name
 expect_fail "pinned manifest name mismatch" validate full
 
