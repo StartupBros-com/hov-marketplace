@@ -19,6 +19,8 @@ jobs:
         uses: actions/checkout@ac593985615ec2ede58e132d2e21d2b1cbd6127c
         with:
           fetch-depth: 0
+      - name: Provision pinned CI tools
+        run: ./scripts/provision-ci-tools.sh
       - name: Validate marketplace without network access
         env:
           BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
@@ -50,6 +52,8 @@ jobs:
         uses: actions/checkout@ac593985615ec2ede58e132d2e21d2b1cbd6127c
         with:
           fetch-depth: 0
+      - name: Provision pinned CI tools
+        run: ./scripts/provision-ci-tools.sh
       - name: Validate pinned source payloads
         env:
           BASE_REF: ${{ github.event.before }}
