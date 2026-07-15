@@ -93,10 +93,12 @@ Set repository configuration:
 ```bash
 # Run as a StartupBros-com organization owner after adding the marketplace deploy key.
 # Use a disposable CLI login so admin:org is not added to the normal GitHub token.
-export GH_CONFIG_DIR="$(mktemp -d)"
-trap 'rm -rf "$GH_CONFIG_DIR"' EXIT
-gh auth login -h github.com --web -s admin:org,repo
-gh auth status -h github.com
+(
+  unset GH_TOKEN GITHUB_TOKEN
+  export GH_CONFIG_DIR="$(mktemp -d)"
+  trap 'rm -rf "$GH_CONFIG_DIR"' EXIT
+  gh auth login -h github.com --web --insecure-storage -s admin:org,repo
+  gh auth status -h github.com
 
 printf '%s' "$HOV_MARKETPLACE_DEPLOY_KEY" | gh secret set HOV_MARKETPLACE_DEPLOY_KEY \
   --org StartupBros-com --repos token-eater,pro-gate
@@ -109,6 +111,7 @@ gh variable set TOOL_RELEASE_ANNOUNCE_URL --body 'https://members.startupbros.co
 # Keep syntax validation until all three repositories are public.
 gh variable set HOV_MARKETPLACE_VALIDATION_MODE --body syntax --repo StartupBros-com/token-eater
 gh variable set HOV_MARKETPLACE_VALIDATION_MODE --body syntax --repo StartupBros-com/pro-gate
+)
 ```
 
 Set `TOOL_RELEASE_ANNOUNCE_SECRET` in the StartupBros production deployment environment to the same dedicated value, then redeploy the app. Confirm `DISCORD_CHANNEL_ANNOUNCEMENTS_ID` is configured. For the first smoke only, use the test announcements channel override supported by the deployment environment.
@@ -301,7 +304,7 @@ For AE3 and R17, observe Cooper or the first engaged member after the next stabl
 - Announcement defect: edit the existing Discord message. Never delete and repost.
 - Public-source exposure concern discovered after flip: stop release publication and member messaging, preserve evidence, and let Will decide whether to make the affected repository private while remediation is prepared.
 - Vault smoke failure: leave staged pages unpublished or revert the content-only publication commit. Do not add access infrastructure or private clone instructions.
-- Release-job credential exposure: cancel active release runs, remove the marketplace deploy key, and remove the affected caller repository from both organization secrets before rotating anything. Audit the caller workflow and restore `hov-marketplace` from a trusted commit, including any attacker-controlled release metadata. Rotate every credential available to the compromised job, restore selected-repository access only after both repositories are trusted, then rerun the release workflow. If only the announce secret was exposed outside a release job, rotate that secret in GitHub and Vercel without changing the deploy key.
+- Release-job credential exposure: cancel active release runs, remove the marketplace deploy key, and remove the affected caller repository from both organization secrets before rotating anything. Preserve evidence, audit the caller workflow, and restore `hov-marketplace` from a trusted commit, including any attacker-controlled release metadata. Reconcile `tool_release_announcements` and the Discord announcements channel against canonical GitHub releases from the last-known-good point; quarantine or repair unauthorized rows and edit forged messages before restoring access. Rotate every credential available to the compromised job. For the announce secret, update Vercel production, redeploy, verify the old secret receives `401`, then update the organization secret. Restore selected-repository access only after both repositories and announcement state are trusted, then rerun the release workflow. If only the announce secret was exposed outside a release job, follow the same ledger, Discord, redeploy, old-secret rejection, and organization-secret rotation steps without changing the deploy key.
 
 ## Final evidence checklist
 
