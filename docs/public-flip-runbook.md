@@ -304,16 +304,34 @@ For AE3 and R17, observe Cooper or the first engaged member after the next stabl
 - [x] Consent first-run, repeat-run, version-bump, and pre-seeded-file tests pass.
 - [x] Marketplace validator fixtures pass.
 - [x] Pro-gate distribution, checksum, consent, mismatch, and daemon-default tests pass.
-- [ ] Final post-merge gitleaks scans clean.
-- [ ] Production migration applied.
+- [x] Final post-merge gitleaks scans clean (2026-07-15, gitleaks 8.28.0, public tips of token-eater/pro-gate/hov-marketplace).
+- [x] Production migration applied (`20260713140000_create_tool_release_announcements` live on StartupBros; table + claim/renew RPCs + RLS verified).
 - [ ] Dedicated secrets and per-tool PATs configured.
-- [ ] Organization 2FA and repository audit complete.
-- [ ] All three repositories public.
-- [ ] Full public-source marketplace validation green.
-- [ ] Unauthenticated two-tool install smoke green.
-- [ ] Vault pages moved from staging, deployed, and content-sync green.
+- [x] Organization 2FA and repository audit complete (2FA required; secret scanning + push protection enabled on all three public tool repos; no operator-path matches outside this runbook example).
+- [x] All three repositories public.
+- [x] Full public-source marketplace validation green (`HOV_SOURCES_PUBLIC=true`, `HOV_MARKETPLACE_VALIDATION_MODE=full`, merged catalog pins landed SHAs).
+- [x] Unauthenticated two-tool install smoke green (clean `CLAUDE_CONFIG_DIR`: marketplace add + `token-eater@hov` 0.1.1 + `pro-gate@hov` 0.21.0).
+- [x] Vault pages moved from staging, deployed, and content-sync green (pushbot #998 merged 2026-07-15 as `ef4e70a50f3feb4794babfee033148217c4983cd`).
 - [ ] Announcement test fire idempotent in the test channel.
 - [ ] One stable promotion per tool recorded.
 - [ ] Cooper confirms the working path.
 - [ ] Seven-day customer-zero soak complete.
 - [ ] First unprompted member update confirmed.
+
+### Automation-completed evidence (2026-07-15)
+
+| Item | Evidence |
+| --- | --- |
+| PR landings | pushbot #979, token-eater #30 (`79f99f0`), pro-gate #22 (`f28b7b3`), hov-marketplace #1 (`2fed62a`), vault #998 (`ef4e70a`) |
+| Announce URL vars | `TOOL_RELEASE_ANNOUNCE_URL=https://members.startupbros.com/api/internal/ops/tool-releases` on both tool repos |
+| Announce fail-closed | `members.startupbros.com` route returns `401 Unauthorized` without secret and with wrong secret |
+| Token-eater consent AE6 | `consent-preflight.sh` blocks first run, records on caveat version 1, silent on repeat, re-asks on version 2 |
+| Pro-gate daemon default | daemon globally defers without operator consent v1; interactive install leaves daemon off |
+| Install path | `/plugin marketplace add https://github.com/StartupBros-com/hov-marketplace.git` then `/plugin install token-eater@hov` and `/plugin install pro-gate@hov` |
+
+### Still Will-owned
+
+1. Mint and set `HOV_MARKETPLACE_PAT` (one per tool repo) and `TOOL_RELEASE_ANNOUNCE_SECRET` (tool repos + StartupBros Vercel production), then redeploy.
+2. Announcement test-fire (send then edit) on the members route.
+3. Publish stable releases and prove marketplace promotion + one Tool Drop.
+4. Cooper reply in `#general`, customer-zero soak, first unprompted member update.
