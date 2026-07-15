@@ -92,9 +92,11 @@ Set repository configuration:
 
 ```bash
 # Run as a StartupBros-com organization owner after adding the marketplace deploy key.
-# Organization secret writes require the admin:org scope.
+# Use a disposable CLI login so admin:org is not added to the normal GitHub token.
+export GH_CONFIG_DIR="$(mktemp -d)"
+trap 'rm -rf "$GH_CONFIG_DIR"' EXIT
+gh auth login -h github.com --web -s admin:org,repo
 gh auth status -h github.com
-gh auth refresh -h github.com -s admin:org
 
 printf '%s' "$HOV_MARKETPLACE_DEPLOY_KEY" | gh secret set HOV_MARKETPLACE_DEPLOY_KEY \
   --org StartupBros-com --repos token-eater,pro-gate
@@ -299,7 +301,7 @@ For AE3 and R17, observe Cooper or the first engaged member after the next stabl
 - Announcement defect: edit the existing Discord message. Never delete and repost.
 - Public-source exposure concern discovered after flip: stop release publication and member messaging, preserve evidence, and let Will decide whether to make the affected repository private while remediation is prepared.
 - Vault smoke failure: leave staged pages unpublished or revert the content-only publication commit. Do not add access infrastructure or private clone instructions.
-- Credential exposure: remove and rotate only the marketplace deploy key or dedicated announce secret, then rerun the same release workflow.
+- Release-job credential exposure: cancel active release runs, remove the marketplace deploy key, and remove the affected caller repository from both organization secrets before rotating anything. Audit the caller workflow and restore `hov-marketplace` from a trusted commit, including any attacker-controlled release metadata. Rotate every credential available to the compromised job, restore selected-repository access only after both repositories are trusted, then rerun the release workflow. If only the announce secret was exposed outside a release job, rotate that secret in GitHub and Vercel without changing the deploy key.
 
 ## Final evidence checklist
 
