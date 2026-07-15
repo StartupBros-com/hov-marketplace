@@ -306,7 +306,7 @@ For AE3 and R17, observe Cooper or the first engaged member after the next stabl
 - [x] Pro-gate distribution, checksum, consent, mismatch, and daemon-default tests pass.
 - [x] Final post-merge gitleaks scans clean (2026-07-15, gitleaks 8.28.0, public tips of token-eater/pro-gate/hov-marketplace).
 - [x] Production migration applied (`20260713140000_create_tool_release_announcements` live on StartupBros; table + claim/renew RPCs + RLS verified).
-- [ ] Marketplace deploy key and dedicated announce secret configured.
+- [x] Marketplace deploy key and dedicated announce secret configured (2026-07-15: write deploy key on `hov-marketplace`; both organization secrets restricted to `token-eater` and `pro-gate`; production route accepts only the dedicated announce secret after redeploy).
 - [x] Organization 2FA and repository audit complete (2FA required; secret scanning + push protection enabled on all three public tool repos; no operator-path matches outside this runbook example).
 - [x] All three repositories public.
 - [x] Full public-source marketplace validation green (`HOV_SOURCES_PUBLIC=true`, `HOV_MARKETPLACE_VALIDATION_MODE=full`, merged catalog pins landed SHAs).
@@ -331,7 +331,6 @@ For AE3 and R17, observe Cooper or the first engaged member after the next stabl
 
 ### Still Will-owned
 
-1. Add the marketplace deploy key, set the two selected-repository organization secrets, set `TOOL_RELEASE_ANNOUNCE_SECRET` in StartupBros Vercel production, then redeploy.
-2. Announcement test-fire (send then edit) on the members route.
-3. Publish stable releases and prove marketplace promotion + one Tool Drop.
-4. Cooper reply in `#general`, customer-zero soak, first unprompted member update.
+1. Announcement test-fire (send then edit) on the members route.
+2. Publish stable releases and prove marketplace promotion + one Tool Drop.
+3. Cooper reply in `#general`, customer-zero soak, first unprompted member update.
