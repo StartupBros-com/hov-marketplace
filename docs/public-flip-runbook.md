@@ -310,7 +310,7 @@ For AE3 and R17, observe Cooper or the first engaged member after the next stabl
 - [x] Pro-gate distribution, checksum, consent, mismatch, and daemon-default tests pass.
 - [x] Final post-merge gitleaks scans clean (2026-07-15, gitleaks 8.28.0, public tips of token-eater/pro-gate/hov-marketplace).
 - [x] Production migration applied (`20260713140000_create_tool_release_announcements` live on StartupBros; table + claim/renew RPCs + RLS verified).
-- [x] Marketplace deploy key and dedicated announce secret configured (2026-07-15: write deploy key on `hov-marketplace`; both organization secrets restricted to `token-eater` and `pro-gate`; production route accepts only the dedicated announce secret after redeploy).
+- [x] Marketplace deploy key and dedicated announce secret configured (2026-07-15: write deploy key on `hov-marketplace`; both organization secrets restricted to `token-eater` and `pro-gate`; production route accepts only the dedicated announce secret after redeploy; caller cutovers merged as token-eater `a4f8204` and pro-gate `4724c58`).
 - [x] Organization 2FA and repository audit complete (2FA required; secret scanning + push protection enabled on all three public tool repos; no operator-path matches outside this runbook example).
 - [x] All three repositories public.
 - [x] Full public-source marketplace validation green (`HOV_SOURCES_PUBLIC=true`, `HOV_MARKETPLACE_VALIDATION_MODE=full`, merged catalog pins landed SHAs).
