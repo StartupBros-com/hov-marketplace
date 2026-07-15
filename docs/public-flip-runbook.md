@@ -91,7 +91,11 @@ Create one random announce secret dedicated to the tool-release route. Store it 
 Set repository configuration:
 
 ```bash
-# Run from any authenticated gh shell after adding the marketplace deploy key.
+# Run as a StartupBros-com organization owner after adding the marketplace deploy key.
+# Organization secret writes require the admin:org scope.
+gh auth status -h github.com
+gh auth refresh -h github.com -s admin:org
+
 printf '%s' "$HOV_MARKETPLACE_DEPLOY_KEY" | gh secret set HOV_MARKETPLACE_DEPLOY_KEY \
   --org StartupBros-com --repos token-eater,pro-gate
 printf '%s' "$TOOL_RELEASE_ANNOUNCE_SECRET" | gh secret set TOOL_RELEASE_ANNOUNCE_SECRET \
