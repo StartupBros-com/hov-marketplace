@@ -1,0 +1,60 @@
+name: Validate marketplace
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  syntax:
+    name: Trusted syntax and policy
+    if: github.event_name == 'push' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.repo.fork == false)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@ac593985615ec2ede58e132d2e21d2b1cbd6127c
+        with:
+          fetch-depth: 0
+      - name: Provision pinned CI tools
+        run: ./scripts/provision-ci-tools.sh
+      - name: Validate marketplace without network access
+        env:
+          BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: ./scripts/validate-marketplace.sh syntax
+      - name: Run deterministic fixture tests
+        run: ./tests/validate-marketplace.test.sh
+
+  public-pr-syntax:
+    name: Public PR data check
+    if: github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || github.event.pull_request.head.repo.fork != false)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Check out untrusted pull request
+        uses: actions/checkout@ac593985615ec2ede58e132d2e21d2b1cbd6127c
+        with:
+          persist-credentials: false
+      - name: Parse marketplace data without repository code
+        run: jq empty .claude-plugin/marketplace.json
+
+  full:
+    name: Pinned sources
+    if: vars.HOV_SOURCES_PUBLIC == 'true' && (github.event_name == 'push' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.repo.fork == false))
+    needs: syntax
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@ac593985615ec2ede58e132d2e21d2b1cbd6127c
+        with:
+          fetch-depth: 0
+      - name: Provision pinned CI tools
+        run: ./scripts/provision-ci-tools.sh
+      - name: Validate pinned source payloads
+        env:
+          BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: ./scripts/validate-marketplace.sh full
