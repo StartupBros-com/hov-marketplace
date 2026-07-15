@@ -84,21 +84,21 @@ Verify `20260713140000_create_tool_release_announcements.sql` is applied. Confir
 
 ### 3. Mint dedicated credentials
 
-**Will-owned.** Create one fine-grained PAT per tool repository. Each PAT must be scoped only to `StartupBros-com/hov-marketplace` with repository `Contents: Read and write`. Do not reuse either PAT between tools.
+Create one passwordless Ed25519 deploy key for `StartupBros-com/hov-marketplace`. Add its public key to that repository with write access. Store its private key once as the organization Actions secret `HOV_MARKETPLACE_DEPLOY_KEY`, restricted to `token-eater` and `pro-gate`. This replaces two long-lived personal access tokens with one credential that can write only to the marketplace repository.
 
-Create one random announce secret dedicated to the tool-release route. Do not reuse `INTERNAL_SERVICE_SECRET`, `CRON_SECRET`, or another app secret.
+Create one random announce secret dedicated to the tool-release route. Store it once as the organization Actions secret `TOOL_RELEASE_ANNOUNCE_SECRET`, also restricted to `token-eater` and `pro-gate`, and set the same value in the StartupBros production deployment. Do not reuse `INTERNAL_SERVICE_SECRET`, `CRON_SECRET`, or another app secret because those credentials authorize unrelated production operations.
 
 Set repository configuration:
 
 ```bash
-# Run from any authenticated gh shell.
-printf '%s' "$TOKEN_EATER_MARKETPLACE_PAT" | gh secret set HOV_MARKETPLACE_PAT --repo StartupBros-com/token-eater
-printf '%s' "$PRO_GATE_MARKETPLACE_PAT" | gh secret set HOV_MARKETPLACE_PAT --repo StartupBros-com/pro-gate
-printf '%s' "$TOOL_RELEASE_ANNOUNCE_SECRET" | gh secret set TOOL_RELEASE_ANNOUNCE_SECRET --repo StartupBros-com/token-eater
-printf '%s' "$TOOL_RELEASE_ANNOUNCE_SECRET" | gh secret set TOOL_RELEASE_ANNOUNCE_SECRET --repo StartupBros-com/pro-gate
+# Run from any authenticated gh shell after adding the marketplace deploy key.
+printf '%s' "$HOV_MARKETPLACE_DEPLOY_KEY" | gh secret set HOV_MARKETPLACE_DEPLOY_KEY \
+  --org StartupBros-com --repos token-eater,pro-gate
+printf '%s' "$TOOL_RELEASE_ANNOUNCE_SECRET" | gh secret set TOOL_RELEASE_ANNOUNCE_SECRET \
+  --org StartupBros-com --repos token-eater,pro-gate
 
-gh variable set TOOL_RELEASE_ANNOUNCE_URL --body 'https://www.startupbros.com/api/internal/ops/tool-releases' --repo StartupBros-com/token-eater
-gh variable set TOOL_RELEASE_ANNOUNCE_URL --body 'https://www.startupbros.com/api/internal/ops/tool-releases' --repo StartupBros-com/pro-gate
+gh variable set TOOL_RELEASE_ANNOUNCE_URL --body 'https://members.startupbros.com/api/internal/ops/tool-releases' --repo StartupBros-com/token-eater
+gh variable set TOOL_RELEASE_ANNOUNCE_URL --body 'https://members.startupbros.com/api/internal/ops/tool-releases' --repo StartupBros-com/pro-gate
 
 # Keep syntax validation until all three repositories are public.
 gh variable set HOV_MARKETPLACE_VALIDATION_MODE --body syntax --repo StartupBros-com/token-eater
@@ -218,7 +218,7 @@ curl --fail-with-body \
     "releaseUrl":"https://github.com/StartupBros-com/token-eater/releases/tag/v0.1.1",
     "notesSummary":"Release train test fire"
   }' \
-  https://www.startupbros.com/api/internal/ops/tool-releases
+  https://members.startupbros.com/api/internal/ops/tool-releases
 ```
 
 Run the same request again. Confirm exactly one Discord message exists and the second request edits that message. Remove or archive the test message using the normal Discord edit-in-place convention, not delete and repost.
@@ -295,7 +295,7 @@ For AE3 and R17, observe Cooper or the first engaged member after the next stabl
 - Announcement defect: edit the existing Discord message. Never delete and repost.
 - Public-source exposure concern discovered after flip: stop release publication and member messaging, preserve evidence, and let Will decide whether to make the affected repository private while remediation is prepared.
 - Vault smoke failure: leave staged pages unpublished or revert the content-only publication commit. Do not add access infrastructure or private clone instructions.
-- Credential exposure: revoke only the affected tool-scoped PAT or dedicated announce secret, rotate it, then rerun the same release workflow.
+- Credential exposure: remove and rotate only the marketplace deploy key or dedicated announce secret, then rerun the same release workflow.
 
 ## Final evidence checklist
 
@@ -306,7 +306,7 @@ For AE3 and R17, observe Cooper or the first engaged member after the next stabl
 - [x] Pro-gate distribution, checksum, consent, mismatch, and daemon-default tests pass.
 - [x] Final post-merge gitleaks scans clean (2026-07-15, gitleaks 8.28.0, public tips of token-eater/pro-gate/hov-marketplace).
 - [x] Production migration applied (`20260713140000_create_tool_release_announcements` live on StartupBros; table + claim/renew RPCs + RLS verified).
-- [ ] Dedicated secrets and per-tool PATs configured.
+- [ ] Marketplace deploy key and dedicated announce secret configured.
 - [x] Organization 2FA and repository audit complete (2FA required; secret scanning + push protection enabled on all three public tool repos; no operator-path matches outside this runbook example).
 - [x] All three repositories public.
 - [x] Full public-source marketplace validation green (`HOV_SOURCES_PUBLIC=true`, `HOV_MARKETPLACE_VALIDATION_MODE=full`, merged catalog pins landed SHAs).
@@ -331,7 +331,7 @@ For AE3 and R17, observe Cooper or the first engaged member after the next stabl
 
 ### Still Will-owned
 
-1. Mint and set `HOV_MARKETPLACE_PAT` (one per tool repo) and `TOOL_RELEASE_ANNOUNCE_SECRET` (tool repos + StartupBros Vercel production), then redeploy.
+1. Add the marketplace deploy key, set the two selected-repository organization secrets, set `TOOL_RELEASE_ANNOUNCE_SECRET` in StartupBros Vercel production, then redeploy.
 2. Announcement test-fire (send then edit) on the members route.
 3. Publish stable releases and prove marketplace promotion + one Tool Drop.
 4. Cooper reply in `#general`, customer-zero soak, first unprompted member update.
