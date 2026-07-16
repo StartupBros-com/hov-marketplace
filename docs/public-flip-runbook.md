@@ -88,52 +88,75 @@ Create one passwordless Ed25519 deploy key for `StartupBros-com/hov-marketplace`
 
 Create one random announce secret dedicated to the tool-release route. Store it once as the organization Actions secret `TOOL_RELEASE_ANNOUNCE_SECRET`, also restricted to `token-eater` and `pro-gate`, and set the same value in the StartupBros production deployment. Do not reuse `INTERNAL_SERVICE_SECRET`, `CRON_SECRET`, or another app secret because those credentials authorize unrelated production operations.
 
-Set repository configuration:
+Set repository configuration. The block freezes both release-train workflows for the whole mutation window: a release published or edited mid-cutover could otherwise push the marketplace and then fail its announcement with `401`, leaving marketplace and Discord state split.
 
 ```bash
 # Run as a StartupBros-com organization owner after adding the marketplace deploy key.
 # Authenticate with a short-expiration, explicitly revocable token instead of a
 # device-flow OAuth login: deleting local CLI state never revokes an OAuth token
-# server-side. Mint a token that can write organization Actions secrets and
-# repository variables (classic PAT with admin:org and repo, or a fine-grained
-# organization PAT with organization-secrets write and repository-variables
-# write), export it as GH_TOKEN for this block only, and delete the token in
-# GitHub settings immediately after verification succeeds.
-(
-  set -euo pipefail
-  : "${GH_TOKEN:?short-expiration organization admin token is required}"
-  : "${HOV_MARKETPLACE_DEPLOY_KEY:?private deploy key is required}"
-  : "${TOOL_RELEASE_ANNOUNCE_SECRET:?announce secret is required}"
-  unset GITHUB_TOKEN
-  gh auth status -h github.com
+# server-side. Mint a token that can write organization Actions secrets,
+# repository variables, and repository workflows (classic PAT with admin:org and
+# repo, or a fine-grained organization PAT with organization-secrets write,
+# repository-variables write, and actions write). Supply all three credentials
+# as one-command environment assignments so they exist only inside the child
+# shell, and delete the token in GitHub settings immediately after this command
+# returns, whether it succeeded or failed.
+GH_TOKEN='<short-expiration token>' \
+HOV_MARKETPLACE_DEPLOY_KEY="$(cat '<private deploy key path>')" \
+TOOL_RELEASE_ANNOUNCE_SECRET="$(cat '<announce secret path>')" \
+bash -euo pipefail -s <<'CUTOVER'
+: "${GH_TOKEN:?short-expiration organization admin token is required}"
+: "${HOV_MARKETPLACE_DEPLOY_KEY:?private deploy key is required}"
+: "${TOOL_RELEASE_ANNOUNCE_SECRET:?announce secret is required}"
+unset GITHUB_TOKEN
+gh auth status -h github.com
 
-  printf '%s' "$HOV_MARKETPLACE_DEPLOY_KEY" | gh secret set HOV_MARKETPLACE_DEPLOY_KEY \
-    --org StartupBros-com --repos token-eater,pro-gate
-  printf '%s' "$TOOL_RELEASE_ANNOUNCE_SECRET" | gh secret set TOOL_RELEASE_ANNOUNCE_SECRET \
-    --org StartupBros-com --repos token-eater,pro-gate
-
-  gh variable set TOOL_RELEASE_ANNOUNCE_URL --body 'https://members.startupbros.com/api/internal/ops/tool-releases' --repo StartupBros-com/token-eater
-  gh variable set TOOL_RELEASE_ANNOUNCE_URL --body 'https://members.startupbros.com/api/internal/ops/tool-releases' --repo StartupBros-com/pro-gate
-
-  # Keep syntax validation until all three repositories are public.
-  gh variable set HOV_MARKETPLACE_VALIDATION_MODE --body syntax --repo StartupBros-com/token-eater
-  gh variable set HOV_MARKETPLACE_VALIDATION_MODE --body syntax --repo StartupBros-com/pro-gate
-
-  # Fail the bootstrap unless both secrets exist with exactly the two selected
-  # repositories and both callers can read their variables.
-  for secret_name in HOV_MARKETPLACE_DEPLOY_KEY TOOL_RELEASE_ANNOUNCE_SECRET; do
-    gh api "orgs/StartupBros-com/actions/secrets/${secret_name}/repositories" \
-      --jq '[.repositories[].full_name] | sort == ["StartupBros-com/pro-gate","StartupBros-com/token-eater"]' |
-      grep -qx true
+# Freeze the release train before the first secret write.
+for repo in StartupBros-com/token-eater StartupBros-com/pro-gate; do
+  gh workflow disable release-train.yml --repo "$repo"
+  for run_id in $(gh run list --workflow release-train.yml --repo "$repo" \
+    --json databaseId,status \
+    --jq '.[] | select(.status == "queued" or .status == "in_progress") | .databaseId'); do
+    gh run cancel "$run_id" --repo "$repo"
   done
-  for repo in StartupBros-com/token-eater StartupBros-com/pro-gate; do
-    gh variable get TOOL_RELEASE_ANNOUNCE_URL --repo "$repo" >/dev/null
-    gh variable get HOV_MARKETPLACE_VALIDATION_MODE --repo "$repo" >/dev/null
-  done
-)
+done
+
+printf '%s' "$HOV_MARKETPLACE_DEPLOY_KEY" | gh secret set HOV_MARKETPLACE_DEPLOY_KEY \
+  --org StartupBros-com --repos token-eater,pro-gate
+printf '%s' "$TOOL_RELEASE_ANNOUNCE_SECRET" | gh secret set TOOL_RELEASE_ANNOUNCE_SECRET \
+  --org StartupBros-com --repos token-eater,pro-gate
+
+gh variable set TOOL_RELEASE_ANNOUNCE_URL --body 'https://members.startupbros.com/api/internal/ops/tool-releases' --repo StartupBros-com/token-eater
+gh variable set TOOL_RELEASE_ANNOUNCE_URL --body 'https://members.startupbros.com/api/internal/ops/tool-releases' --repo StartupBros-com/pro-gate
+
+# Keep syntax validation until all three repositories are public.
+gh variable set HOV_MARKETPLACE_VALIDATION_MODE --body syntax --repo StartupBros-com/token-eater
+gh variable set HOV_MARKETPLACE_VALIDATION_MODE --body syntax --repo StartupBros-com/pro-gate
+
+# Fail the bootstrap unless both secrets exist with exactly the two selected
+# repositories and both callers can read their variables.
+for secret_name in HOV_MARKETPLACE_DEPLOY_KEY TOOL_RELEASE_ANNOUNCE_SECRET; do
+  gh api "orgs/StartupBros-com/actions/secrets/${secret_name}/repositories" \
+    --jq '[.repositories[].full_name] | sort == ["StartupBros-com/pro-gate","StartupBros-com/token-eater"]' |
+    grep -qx true
+done
+for repo in StartupBros-com/token-eater StartupBros-com/pro-gate; do
+  gh variable get TOOL_RELEASE_ANNOUNCE_URL --repo "$repo" >/dev/null
+  gh variable get HOV_MARKETPLACE_VALIDATION_MODE --repo "$repo" >/dev/null
+done
+CUTOVER
 ```
 
+Delete the temporary token in GitHub settings now, success or failure. A mid-bootstrap failure leaves the release train frozen, which is the safe state: rerun the block to completion before continuing.
+
 Set `TOOL_RELEASE_ANNOUNCE_SECRET` in the StartupBros production deployment environment to the same dedicated value, then redeploy the app. Prove the wiring after the redeploy: an unauthenticated request receives `401` and a `{}` probe with the configured secret receives the route's `400` validation response. Confirm `DISCORD_CHANNEL_ANNOUNCEMENTS_ID` is configured. For the first smoke only, use the test announcements channel override supported by the deployment environment.
+
+Re-enable the release train only after those probes pass. This needs only repository write access, so it can run from the normal authenticated shell:
+
+```bash
+gh workflow enable release-train.yml --repo StartupBros-com/token-eater
+gh workflow enable release-train.yml --repo StartupBros-com/pro-gate
+```
 
 ### 4. Organization and repository audit
 
