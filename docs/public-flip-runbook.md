@@ -111,14 +111,30 @@ bash -euo pipefail -s <<'CUTOVER'
 unset GITHUB_TOKEN
 gh auth status -h github.com
 
-# Freeze the release train before the first secret write.
+# Freeze the release train before the first secret write. Record the newest
+# release id per caller: disabled workflows never create runs for release
+# events, so anything published or edited while frozen must be replayed after
+# the cutover.
 for repo in StartupBros-com/token-eater StartupBros-com/pro-gate; do
+  newest_id="$(gh api "repos/${repo}/releases?per_page=1" --jq '.[0].id // 0')"
+  printf '%s pre-cutover newest release id: %s\n' "$repo" "$newest_id"
   gh workflow disable release-train.yml --repo "$repo"
-  for run_id in $(gh run list --workflow release-train.yml --repo "$repo" \
-    --json databaseId,status \
-    --jq '.[] | select(.status == "queued" or .status == "in_progress") | .databaseId'); do
-    gh run cancel "$run_id" --repo "$repo"
+done
+
+# Drain live runs to a terminal state instead of cancelling: cancellation is
+# asynchronous and can kill a job between its marketplace push and its
+# announcement. Each enumeration is a checked capture so a gh failure aborts
+# the cutover instead of reading as "no active runs".
+for repo in StartupBros-com/token-eater StartupBros-com/pro-gate; do
+  for _ in $(seq 1 90); do
+    active="$(gh run list --workflow release-train.yml --repo "$repo" \
+      --json status --jq '[.[] | select(.status != "completed")] | length')"
+    [ "$active" -eq 0 ] && break
+    sleep 10
   done
+  active="$(gh run list --workflow release-train.yml --repo "$repo" \
+    --json status --jq '[.[] | select(.status != "completed")] | length')"
+  [ "$active" -eq 0 ]
 done
 
 printf '%s' "$HOV_MARKETPLACE_DEPLOY_KEY" | gh secret set HOV_MARKETPLACE_DEPLOY_KEY \
@@ -156,7 +172,22 @@ Re-enable the release train only after those probes pass. This needs only reposi
 ```bash
 gh workflow enable release-train.yml --repo StartupBros-com/token-eater
 gh workflow enable release-train.yml --repo StartupBros-com/pro-gate
+
+# Detect events dropped while the train was frozen.
+for repo in StartupBros-com/token-eater StartupBros-com/pro-gate; do
+  newest_id="$(gh api "repos/${repo}/releases?per_page=1" --jq '.[0].id // 0')"
+  printf '%s post-cutover newest release id: %s\n' "$repo" "$newest_id"
+done
 ```
+
+Release events are the only trigger for either caller; there is no manual dispatch. If a post-cutover id differs from its pre-cutover snapshot, or any release was edited during the window, replay each affected release by re-saving it, which emits a fresh `release.edited` event:
+
+```bash
+gh release edit "$tag" --repo "$repo" \
+  --notes "$(gh release view "$tag" --repo "$repo" --json body --jq .body)"
+```
+
+The release train is idempotent, so replaying an already-promoted release is safe. Watch every replay run to completion and confirm its marketplace promotion and announcement before declaring the cutover complete.
 
 ### 4. Organization and repository audit
 
