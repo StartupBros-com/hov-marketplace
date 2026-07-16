@@ -138,15 +138,24 @@ done
 
 # Drain rather than cancel every run that was nonterminal when the freeze took
 # effect. Cancellation can kill a job between its marketplace push and its
-# announcement. Each enumeration is a checked capture; gh run watch
-# --exit-status also requires every captured run to conclude successfully.
+# announcement. Persist each identity before watching so retries retain runs
+# that have since completed. A non-successful or uncertain run marks its
+# repository for replay after the new credentials are live.
 for repo in StartupBros-com/token-eater StartupBros-com/pro-gate; do
+  slug="${repo##*/}"
+  captured="$snapshot_dir/${slug}.captured-runs.tsv"
+  touch "$captured"
   run_ids="$(gh run list --all --workflow release-train.yml --repo "$repo" \
     --json databaseId,status \
     --jq '.[] | select(.status != "completed") | .databaseId')"
   while IFS= read -r run_id; do
-    [ -z "$run_id" ] || gh run watch "$run_id" --repo "$repo" --exit-status
+    [ -z "$run_id" ] || printf '%s\t%s\n' "$repo" "$run_id" >> "$captured"
   done <<< "$run_ids"
+  sort -u -o "$captured" "$captured"
+  while IFS=$'\t' read -r captured_repo run_id; do
+    [ -z "$run_id" ] && continue
+    gh run watch "$run_id" --repo "$captured_repo"
+  done < "$captured"
   active="$(gh run list --all --workflow release-train.yml --repo "$repo" \
     --json status --jq '[.[] | select(.status != "completed")] | length')"
   [ "$active" -eq 0 ]
@@ -185,11 +194,16 @@ Set `TOOL_RELEASE_ANNOUNCE_SECRET` in the StartupBros production deployment envi
 Re-enable the release train only after those probes pass. This needs only repository write access, so it can run from the normal authenticated shell:
 
 ```bash
+#!/usr/bin/env bash
+set -euo pipefail
 gh workflow enable release-train.yml --repo StartupBros-com/token-eater
 gh workflow enable release-train.yml --repo StartupBros-com/pro-gate
 
-# Detect every release mutation dropped while the train was frozen. Persist
-# exactly which repositories changed for the replay block below.
+# Detect every release mutation dropped while the train was frozen, and audit
+# every run captured at freeze time. Any captured run that did not conclude
+# successfully marks its repository for replay: it may have pushed the
+# marketplace and then failed its announcement, and its release snapshot rows
+# can still compare equal.
 snapshot_dir='<durable snapshot directory>'
 changed_repos="$snapshot_dir/changed-repositories.txt"
 : > "$changed_repos"
@@ -198,21 +212,57 @@ for repo in StartupBros-com/token-eater StartupBros-com/pro-gate; do
   gh api --paginate "repos/${repo}/releases?per_page=100" \
     --jq '.[] | [.id,.tag_name,.draft,.prerelease,.published_at,.updated_at] | @tsv' |
     sort > "$snapshot_dir/${slug}.after.tsv"
-  if ! cmp -s "$snapshot_dir/${slug}.before.tsv" "$snapshot_dir/${slug}.after.tsv"; then
-    printf '%s\n' "$repo" | tee -a "$changed_repos"
+
+  # Deletion, retagging, or demotion to draft or prerelease of a previously
+  # snapshotted release is unrecoverable by replay: the rollback guard would
+  # accept the withdrawn pin as a no-op. Stop and reconcile manually.
+  # Promotions and note edits fall through to the replay path instead.
+  removed_or_mutated="$(awk -F'\t' '
+    NR==FNR { tag[$1]=$2; draft[$1]=$3; pre[$1]=$4; next }
+    { seen[$1]=1
+      if ($1 in tag) {
+        if (tag[$1] != $2) bad++
+        if (draft[$1] == "false" && $3 == "true") bad++
+        if (pre[$1] == "false" && $4 == "true") bad++
+      }
+    }
+    END { for (id in tag) if (!(id in seen)) bad++; print bad+0 }
+  ' "$snapshot_dir/${slug}.before.tsv" "$snapshot_dir/${slug}.after.tsv")"
+  if [ "$removed_or_mutated" -gt 0 ]; then
+    printf 'STOP: %s deleted, demoted, or retagged a snapshotted release while frozen.\n' "$repo"
+    printf 'Restore the release (or publish a forward release), reconcile the marketplace,\n'
+    printf 'ledger, and Discord, and do not continue this block until resolved.\n'
+    exit 1
   fi
+
+  if ! cmp -s "$snapshot_dir/${slug}.before.tsv" "$snapshot_dir/${slug}.after.tsv"; then
+    printf '%s\n' "$repo" >> "$changed_repos"
+  fi
+  while IFS=$'\t' read -r captured_repo run_id; do
+    [ -z "$run_id" ] && continue
+    conclusion="$(gh run view "$run_id" --repo "$captured_repo" --json conclusion --jq .conclusion)"
+    if [ "$conclusion" != success ]; then
+      printf '%s\n' "$captured_repo" >> "$changed_repos"
+    fi
+  done < "$snapshot_dir/${slug}.captured-runs.tsv"
 done
+sort -u -o "$changed_repos" "$changed_repos"
+cat "$changed_repos"
 ```
 
-Release events are the only trigger for either caller; there is no manual dispatch. If either complete snapshot changed, replay every current non-draft, non-prerelease release in that repository by re-saving it, which emits a fresh `release.edited` event. Replaying all stable releases avoids trying to infer which edit or draft publication emitted a dropped event:
+Release events are the only trigger for either caller; there is no manual dispatch. For each repository marked above, replay every current non-draft, non-prerelease release by re-saving it, which emits a fresh `release.edited` event. Replaying all stable releases avoids trying to infer which edit, draft publication, or half-finished run dropped state. Notes are fetched into a checked temporary file first so a failed read can never overwrite a canonical release body:
 
 ```bash
+#!/usr/bin/env bash
+set -euo pipefail
 snapshot_dir='<durable snapshot directory>'
 while IFS= read -r repo; do
   [ -z "$repo" ] && continue
   while IFS= read -r tag; do
-    notes="$(gh release view "$tag" --repo "$repo" --json body --jq .body)"
-    gh release edit "$tag" --repo "$repo" --notes "$notes"
+    notes_file="$(mktemp)"
+    gh release view "$tag" --repo "$repo" --json body --jq .body > "$notes_file"
+    gh release edit "$tag" --repo "$repo" --notes-file "$notes_file"
+    rm -f "$notes_file"
   done < <(gh release list --repo "$repo" --limit 100 \
     --json tagName,isDraft,isPrerelease \
     --jq '.[] | select(.isDraft == false and .isPrerelease == false) | .tagName')
