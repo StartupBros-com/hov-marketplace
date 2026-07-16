@@ -204,7 +204,7 @@ Set `TOOL_RELEASE_ANNOUNCE_SECRET` in the StartupBros production deployment envi
 
 Now run the announcement endpoint test fire (see that section) while both workflows are still disabled, so a real release can never race the test-channel override. After the test fire and its ledger cleanup pass, set `DISCORD_CHANNEL_TOOL_RELEASES_ID` to the production announcements channel (or remove it to use the fallback) and redeploy. Verify the restore by reading the deployed value back, for example by pulling the production environment and comparing the variable to the production announcements channel ID. The authenticated `{}` probe cannot verify channel routing: the route validates the payload schema before it reads the channel, so it returns `400` regardless of channel configuration. Only then continue below.
 
-Audit the frozen window before re-enabling anything, so an audit failure fails closed with the train still frozen. Re-enablement is all-or-nothing: a failure re-disables whatever was enabled, and both workflow states are verified `active` before the trap clears. This needs only repository read and write access, so it can run from the normal authenticated shell:
+Audit the frozen window before re-enabling anything, so an audit failure fails closed with both trains still frozen. The audit is read-only: it captures every after-snapshot first and then runs every comparison while accumulating failures, so a mismatch in one repository cannot hide simultaneous tampering in the other. This needs only repository read access, so it can run from the normal authenticated shell:
 
 ```bash
 #!/usr/bin/env bash
@@ -218,9 +218,23 @@ for repo in StartupBros-com/token-eater StartupBros-com/pro-gate; do
   gh api --paginate "repos/${repo}/git/matching-refs/tags?per_page=100" \
     --jq '.[] | [.ref, .object.sha, .object.type] | @tsv' |
     sort > "$snapshot_dir/${slug}.tags.after.tsv"
-  cmp "$snapshot_dir/${slug}.before.tsv" "$snapshot_dir/${slug}.after.tsv"
-  cmp "$snapshot_dir/${slug}.tags.before.tsv" "$snapshot_dir/${slug}.tags.after.tsv"
 done
+mismatches=0
+for repo in StartupBros-com/token-eater StartupBros-com/pro-gate; do
+  slug="${repo##*/}"
+  cmp "$snapshot_dir/${slug}.before.tsv" "$snapshot_dir/${slug}.after.tsv" ||
+    { printf '%s releases changed while frozen\n' "$repo"; mismatches=$((mismatches + 1)); }
+  cmp "$snapshot_dir/${slug}.tags.before.tsv" "$snapshot_dir/${slug}.tags.after.tsv" ||
+    { printf '%s tags changed while frozen\n' "$repo"; mismatches=$((mismatches + 1)); }
+done
+[ "$mismatches" -eq 0 ]
+```
+
+When the audit passes, re-enable both workflows with this all-or-nothing block. A failure or a delivered `INT` or `TERM` re-disables both workflows, verifies each reaches `disabled_manually`, alerts loudly when it cannot prove that, and terminates instead of resuming:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
 cleanup_enable_failure() {
   for repo in StartupBros-com/token-eater StartupBros-com/pro-gate; do
     gh workflow disable release-train.yml --repo "$repo" || true
@@ -230,7 +244,14 @@ cleanup_enable_failure() {
     fi
   done
 }
-trap cleanup_enable_failure EXIT INT TERM
+on_signal() {
+  trap - EXIT INT TERM
+  cleanup_enable_failure
+  exit "$1"
+}
+trap 'on_signal 130' INT
+trap 'on_signal 143' TERM
+trap cleanup_enable_failure EXIT
 gh workflow enable release-train.yml --repo StartupBros-com/token-eater
 gh workflow enable release-train.yml --repo StartupBros-com/pro-gate
 for repo in StartupBros-com/token-eater StartupBros-com/pro-gate; do
@@ -240,11 +261,11 @@ done
 trap - EXIT INT TERM
 ```
 
-If both comparisons match, the release lock held, the cutover is clean, and the train is live again.
+If the audit passes and the enable block completes, the release lock held, the cutover is clean, and both trains are live again.
 
-If either comparison differs, the release lock was violated. Keep the affected repository's workflow disabled, classify the difference from the two snapshot files, and reconcile before re-enabling it:
+If the audit reports any mismatch, the release lock was violated and both workflows are still frozen. Classify every reported difference from the snapshot files, then reconcile:
 
-- A release was published, promoted from draft, or its name or body was edited: first compare the base64 name and body columns against the before snapshot and restore or explicitly approve the content, so replay cannot bless tampered notes. Then re-enable that workflow and re-save the affected release so GitHub emits a fresh `release.edited` event, fetching the notes into a checked file first so a failed read can never overwrite the canonical body. Watch the resulting run, then confirm the marketplace pin, the ledger row, and the Discord message.
+- A release was published, promoted from draft, or its name or body was edited: first compare the base64 name and body columns against the before snapshot and restore or explicitly approve the content, so replay cannot bless tampered notes. After every reported difference is reconciled this way, run the all-or-nothing enable block above so both trains come back together, then re-save each affected release so GitHub emits a fresh `release.edited` event, fetching the notes into a checked file first so a failed read can never overwrite the canonical body. Watch each resulting run, then confirm the marketplace pin, the ledger row, and the Discord message.
 
 ```bash
 #!/usr/bin/env bash
@@ -259,7 +280,7 @@ gh release edit '<tag>' --repo '<owner/repo>' --notes-file "$notes_file"
 
 - The affected release is no longer the latest stable: replay cannot re-announce it, because callers promote only the current latest stable release. Announce that exact release by posting its payload directly to the tool-release route with the announce secret, exactly as in the synthetic announcement test fire, then verify its ledger row and Discord message.
 - Only the tag snapshot differs: a Git tag was moved without touching release metadata. The callers resolve that mutable tag to `SOURCE_SHA`, so the trusted source may have changed. Treat this like deletion or demotion, not replay.
-- A snapshotted release was deleted, retagged, demoted to draft or prerelease, or its asset set changed (IDs, names, sizes, or digests): never replay. A withdrawn release makes replay a silent no-op under the rollback guard, and replaying tampered assets would download, verify, and distribute attacker-controlled code whose archive and checksum agree with each other. Treat this as an incident: keep the train frozen, restore the exact trusted assets or publish a new release built from trusted source, verify its digests against an independent trusted build record, and follow the release-job credential exposure recovery's reconciliation ordering before re-enabling anything.
+- A snapshotted release was deleted, retagged, demoted to draft or prerelease, or its asset set changed (IDs, names, sizes, or digests): never replay. A withdrawn release makes replay a silent no-op under the rollback guard, and replaying tampered assets would download, verify, and distribute attacker-controlled code whose archive and checksum agree with each other. Treat this as an incident: keep the affected repository's workflow frozen, restore the exact trusted assets or publish a new release built from trusted source, verify its digests against an independent trusted build record, and follow the release-job credential exposure recovery's reconciliation ordering before re-enabling it. Explicitly re-enable the unaffected repository's workflow (`gh workflow enable release-train.yml --repo <unaffected>` and verify its state is `active`) so its release events are not silently discarded while the incident is worked.
 
 Declare the cutover complete only when the marketplace pin, the `tool_release_announcements` ledger, and the Discord announcements channel all match canonical GitHub releases. This terminal reconciliation is the authoritative check; it also catches any historical run that failed between its marketplace push and its announcement, without any run-level forensics.
 
