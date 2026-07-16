@@ -88,19 +88,20 @@ Create one passwordless Ed25519 deploy key for `StartupBros-com/hov-marketplace`
 
 Create one random announce secret dedicated to the tool-release route. Store it once as the organization Actions secret `TOOL_RELEASE_ANNOUNCE_SECRET`, also restricted to `token-eater` and `pro-gate`, and set the same value in the StartupBros production deployment. Do not reuse `INTERNAL_SERVICE_SECRET`, `CRON_SECRET`, or another app secret because those credentials authorize unrelated production operations.
 
-Set repository configuration. The block freezes both release-train workflows for the whole mutation window: a release published or edited mid-cutover could otherwise push the marketplace and then fail its announcement with `401`, leaving marketplace and Discord state split.
+Set repository configuration. Two rules make the mutation window safe without any run orchestration. First, an operator-enforced release lock: you are the only account with release permission in this organization, so do not publish, edit, or delete any release between freezing and the post-cutover audit; the audit verifies the lock held. Second, the block requires a completely idle release train before the first secret write, because a release job that straddles the window could push the marketplace and then fail its announcement with `401`, leaving marketplace and Discord state split.
 
 ```bash
 # Run as a StartupBros-com organization owner after adding the marketplace deploy key.
 # Authenticate with a short-expiration, explicitly revocable token instead of a
 # device-flow OAuth login: deleting local CLI state never revokes an OAuth token
 # server-side. Mint a token that can write organization Actions secrets,
-# repository variables, and repository workflows (classic PAT with admin:org and
-# repo, or a fine-grained organization PAT with organization-secrets write,
-# repository-variables write, and actions write). Supply all three credentials
-# as one-command environment assignments so they exist only inside the child
-# shell, and delete the token in GitHub settings immediately after this command
-# returns, whether it succeeded or failed.
+# repository variables, and repository workflows, and read repository contents
+# for the release snapshots (classic PAT with admin:org and repo, or a
+# fine-grained organization PAT with organization-secrets write,
+# repository-variables write, actions write, and contents read). Supply all
+# credentials as one-command environment assignments so they exist only inside
+# the child shell, and delete the token in GitHub settings immediately after
+# this command returns, whether it succeeded or failed.
 GH_TOKEN='<short-expiration token>' \
 HOV_MARKETPLACE_DEPLOY_KEY="$(cat '<private deploy key path>')" \
 TOOL_RELEASE_ANNOUNCE_SECRET="$(cat '<announce secret path>')" \
@@ -109,16 +110,16 @@ bash -euo pipefail -s <<'CUTOVER'
 : "${GH_TOKEN:?short-expiration organization admin token is required}"
 : "${HOV_MARKETPLACE_DEPLOY_KEY:?private deploy key is required}"
 : "${TOOL_RELEASE_ANNOUNCE_SECRET:?announce secret is required}"
+snapshot_dir="${CUTOVER_SNAPSHOT_DIR:?writable snapshot directory is required}"
+mkdir -p "$snapshot_dir"
 unset GITHUB_TOKEN
 gh auth status -h github.com
 
 # Freeze the release train before the first secret write. Save a complete
-# release-state snapshot outside the child shell: ID alone cannot detect an
-# edit or publication of an existing draft. Read workflow state first. Create
-# the baseline only while transitioning active to disabled; a retry from
-# disabled_manually must reuse the original baseline without overwriting it.
-snapshot_dir="${CUTOVER_SNAPSHOT_DIR:?writable snapshot directory is required}"
-mkdir -p "$snapshot_dir"
+# release-state snapshot, including drafts: ID alone cannot detect an edit or
+# publication of an existing draft. Create the baseline only while
+# transitioning active to disabled; a retry from disabled_manually must reuse
+# the original baseline without overwriting it.
 for repo in StartupBros-com/token-eater StartupBros-com/pro-gate; do
   slug="${repo##*/}"
   baseline="$snapshot_dir/${slug}.before.tsv"
@@ -136,28 +137,15 @@ for repo in StartupBros-com/token-eater StartupBros-com/pro-gate; do
   fi
 done
 
-# Drain rather than cancel every run that was nonterminal when the freeze took
-# effect. Cancellation can kill a job between its marketplace push and its
-# announcement. Persist each identity before watching so retries retain runs
-# that have since completed. A non-successful or uncertain run marks its
-# repository for replay after the new credentials are live.
+# Require a completely idle release train before mutating credentials. This
+# enumeration is paginated and server-complete, so no run can hide beyond a
+# client-side page limit. If it fails or finds runs, wait for them to finish
+# and rerun the block; never cancel a run that may sit between its marketplace
+# push and its announcement.
 for repo in StartupBros-com/token-eater StartupBros-com/pro-gate; do
-  slug="${repo##*/}"
-  captured="$snapshot_dir/${slug}.captured-runs.tsv"
-  touch "$captured"
-  run_ids="$(gh run list --all --workflow release-train.yml --repo "$repo" \
-    --json databaseId,status \
-    --jq '.[] | select(.status != "completed") | .databaseId')"
-  while IFS= read -r run_id; do
-    [ -z "$run_id" ] || printf '%s\t%s\n' "$repo" "$run_id" >> "$captured"
-  done <<< "$run_ids"
-  sort -u -o "$captured" "$captured"
-  while IFS=$'\t' read -r captured_repo run_id; do
-    [ -z "$run_id" ] && continue
-    gh run watch "$run_id" --repo "$captured_repo"
-  done < "$captured"
-  active="$(gh run list --all --workflow release-train.yml --repo "$repo" \
-    --json status --jq '[.[] | select(.status != "completed")] | length')"
+  active="$(gh api --paginate \
+    "repos/${repo}/actions/workflows/release-train.yml/runs?per_page=100" \
+    --jq '.workflow_runs[] | select(.status != "completed") | .id' | wc -l)"
   [ "$active" -eq 0 ]
 done
 
@@ -191,85 +179,39 @@ Delete the temporary token in GitHub settings now, success or failure. A mid-boo
 
 Set `TOOL_RELEASE_ANNOUNCE_SECRET` in the StartupBros production deployment environment to the same dedicated value, then redeploy the app. Prove the wiring after the redeploy: an unauthenticated request receives `401` and a `{}` probe with the configured secret receives the route's `400` validation response. Confirm `DISCORD_CHANNEL_ANNOUNCEMENTS_ID` is configured. For the first smoke only, use the test announcements channel override supported by the deployment environment.
 
-Re-enable the release train only after those probes pass. This needs only repository write access, so it can run from the normal authenticated shell:
+Audit the frozen window before re-enabling anything, so an audit failure fails closed with the train still frozen. This needs only repository read and write access, so it can run from the normal authenticated shell:
 
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
-gh workflow enable release-train.yml --repo StartupBros-com/token-eater
-gh workflow enable release-train.yml --repo StartupBros-com/pro-gate
-
-# Detect every release mutation dropped while the train was frozen, and audit
-# every run captured at freeze time. Any captured run that did not conclude
-# successfully marks its repository for replay: it may have pushed the
-# marketplace and then failed its announcement, and its release snapshot rows
-# can still compare equal.
 snapshot_dir='<durable snapshot directory>'
-changed_repos="$snapshot_dir/changed-repositories.txt"
-: > "$changed_repos"
 for repo in StartupBros-com/token-eater StartupBros-com/pro-gate; do
   slug="${repo##*/}"
   gh api --paginate "repos/${repo}/releases?per_page=100" \
     --jq '.[] | [.id,.tag_name,.draft,.prerelease,.published_at,.updated_at] | @tsv' |
     sort > "$snapshot_dir/${slug}.after.tsv"
-
-  # Deletion, retagging, or demotion to draft or prerelease of a previously
-  # snapshotted release is unrecoverable by replay: the rollback guard would
-  # accept the withdrawn pin as a no-op. Stop and reconcile manually.
-  # Promotions and note edits fall through to the replay path instead.
-  removed_or_mutated="$(awk -F'\t' '
-    NR==FNR { tag[$1]=$2; draft[$1]=$3; pre[$1]=$4; next }
-    { seen[$1]=1
-      if ($1 in tag) {
-        if (tag[$1] != $2) bad++
-        if (draft[$1] == "false" && $3 == "true") bad++
-        if (pre[$1] == "false" && $4 == "true") bad++
-      }
-    }
-    END { for (id in tag) if (!(id in seen)) bad++; print bad+0 }
-  ' "$snapshot_dir/${slug}.before.tsv" "$snapshot_dir/${slug}.after.tsv")"
-  if [ "$removed_or_mutated" -gt 0 ]; then
-    printf 'STOP: %s deleted, demoted, or retagged a snapshotted release while frozen.\n' "$repo"
-    printf 'Restore the release (or publish a forward release), reconcile the marketplace,\n'
-    printf 'ledger, and Discord, and do not continue this block until resolved.\n'
-    exit 1
-  fi
-
-  if ! cmp -s "$snapshot_dir/${slug}.before.tsv" "$snapshot_dir/${slug}.after.tsv"; then
-    printf '%s\n' "$repo" >> "$changed_repos"
-  fi
-  while IFS=$'\t' read -r captured_repo run_id; do
-    [ -z "$run_id" ] && continue
-    conclusion="$(gh run view "$run_id" --repo "$captured_repo" --json conclusion --jq .conclusion)"
-    if [ "$conclusion" != success ]; then
-      printf '%s\n' "$captured_repo" >> "$changed_repos"
-    fi
-  done < "$snapshot_dir/${slug}.captured-runs.tsv"
+  cmp "$snapshot_dir/${slug}.before.tsv" "$snapshot_dir/${slug}.after.tsv"
 done
-sort -u -o "$changed_repos" "$changed_repos"
-cat "$changed_repos"
+gh workflow enable release-train.yml --repo StartupBros-com/token-eater
+gh workflow enable release-train.yml --repo StartupBros-com/pro-gate
 ```
 
-Release events are the only trigger for either caller; there is no manual dispatch. For each repository marked above, replay every current non-draft, non-prerelease release by re-saving it, which emits a fresh `release.edited` event. Replaying all stable releases avoids trying to infer which edit, draft publication, or half-finished run dropped state. Notes are fetched into a checked temporary file first so a failed read can never overwrite a canonical release body:
+If both comparisons match, the release lock held, the cutover is clean, and the train is live again.
+
+If either comparison differs, the release lock was violated. Keep the affected repository's workflow disabled, classify the difference from the two snapshot files, and reconcile before re-enabling it:
+
+- A release was published, promoted from draft, or edited: re-enable that workflow, then re-save the affected release so GitHub emits a fresh `release.edited` event, fetching the notes into a checked file first so a failed read can never overwrite the canonical body. Watch the resulting run, then confirm the marketplace pin, the ledger row, and the Discord message.
 
 ```bash
-#!/usr/bin/env bash
-set -euo pipefail
-snapshot_dir='<durable snapshot directory>'
-while IFS= read -r repo; do
-  [ -z "$repo" ] && continue
-  while IFS= read -r tag; do
-    notes_file="$(mktemp)"
-    gh release view "$tag" --repo "$repo" --json body --jq .body > "$notes_file"
-    gh release edit "$tag" --repo "$repo" --notes-file "$notes_file"
-    rm -f "$notes_file"
-  done < <(gh release list --repo "$repo" --limit 100 \
-    --json tagName,isDraft,isPrerelease \
-    --jq '.[] | select(.isDraft == false and .isPrerelease == false) | .tagName')
-done < "$snapshot_dir/changed-repositories.txt"
+notes_file="$(mktemp)"
+gh release view '<tag>' --repo '<owner/repo>' --json body --jq .body > "$notes_file"
+gh release edit '<tag>' --repo '<owner/repo>' --notes-file "$notes_file"
 ```
 
-The release train is idempotent and rejects rollback, so replaying an already-promoted stable release is safe. Watch every replay run to completion and confirm marketplace and announcement state match canonical GitHub releases before declaring the cutover complete.
+- The affected release is no longer the latest stable: replay cannot re-announce it, because callers promote only the current latest stable release. Announce that exact release by posting its payload directly to the tool-release route with the announce secret, exactly as in the synthetic announcement test fire, then verify its ledger row and Discord message.
+- A snapshotted release was deleted, retagged, or demoted to draft or prerelease: the marketplace may be pinned to a withdrawn release, and the rollback guard makes replay a silent no-op. Treat this as an incident: keep the train frozen and follow the release-job credential exposure recovery's reconciliation ordering before re-enabling anything.
+
+Declare the cutover complete only when the marketplace pin, the `tool_release_announcements` ledger, and the Discord announcements channel all match canonical GitHub releases. This terminal reconciliation is the authoritative check; it also catches any historical run that failed between its marketplace push and its announcement, without any run-level forensics.
 
 ### 4. Organization and repository audit
 
