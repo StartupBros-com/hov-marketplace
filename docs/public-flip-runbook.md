@@ -92,16 +92,19 @@ Set repository configuration:
 
 ```bash
 # Run as a StartupBros-com organization owner after adding the marketplace deploy key.
-# Use a disposable CLI login so admin:org is not added to the normal GitHub token.
+# Authenticate with a short-expiration, explicitly revocable token instead of a
+# device-flow OAuth login: deleting local CLI state never revokes an OAuth token
+# server-side. Mint a token that can write organization Actions secrets and
+# repository variables (classic PAT with admin:org and repo, or a fine-grained
+# organization PAT with organization-secrets write and repository-variables
+# write), export it as GH_TOKEN for this block only, and delete the token in
+# GitHub settings immediately after verification succeeds.
 (
   set -euo pipefail
-  unset GH_TOKEN GITHUB_TOKEN
+  : "${GH_TOKEN:?short-expiration organization admin token is required}"
   : "${HOV_MARKETPLACE_DEPLOY_KEY:?private deploy key is required}"
   : "${TOOL_RELEASE_ANNOUNCE_SECRET:?announce secret is required}"
-  gh_config_dir="$(mktemp -d)"
-  export GH_CONFIG_DIR="$gh_config_dir"
-  trap 'rm -rf "$gh_config_dir"' EXIT
-  gh auth login -h github.com --web --insecure-storage -s admin:org,repo
+  unset GITHUB_TOKEN
   gh auth status -h github.com
 
   printf '%s' "$HOV_MARKETPLACE_DEPLOY_KEY" | gh secret set HOV_MARKETPLACE_DEPLOY_KEY \
@@ -320,7 +323,7 @@ For AE3 and R17, observe Cooper or the first engaged member after the next stabl
 - Announcement defect: edit the existing Discord message. Never delete and repost.
 - Public-source exposure concern discovered after flip: stop release publication and member messaging, preserve evidence, and let Will decide whether to make the affected repository private while remediation is prepared.
 - Vault smoke failure: leave staged pages unpublished or revert the content-only publication commit. Do not add access infrastructure or private clone instructions.
-- Release-job credential exposure: cancel active release runs, remove the marketplace deploy key, and remove the affected caller repository from both organization secrets. Preserve an immutable evidence snapshot, then contain the announce route before any cleanup: set a temporary quarantine value for `TOOL_RELEASE_ANNOUNCE_SECRET` in Vercel production (or disable the route), redeploy, and verify the stolen value receives `401`. Only after containment, audit the caller workflow and restore `hov-marketplace` from a trusted commit, including any attacker-controlled release metadata. Reconcile `tool_release_announcements` and the Discord announcements channel against canonical GitHub releases from the last-known-good point; quarantine or repair unauthorized rows and edit forged messages. Rotate every credential available to the compromised job. Install the final replacement announce secret in Vercel production, redeploy, and prove both directions before distributing it: the stolen and quarantine values receive `401`, and a `{}` probe with the replacement receives the route's `400` validation response. Only then update the selected-repository organization secret. Restore selected-repository access only after both repositories and announcement state are trusted, then rerun the release workflow. If only the announce secret was exposed outside a release job, follow the same containment, reconciliation, redeploy, `401` and `400` proof, and organization-secret rotation steps without changing the deploy key.
+- Release-job credential exposure: cancel active release runs, remove the marketplace deploy key, and remove the affected caller repository from both organization secrets. Preserve an immutable evidence snapshot, then contain both distribution surfaces before any cleanup. Quarantine the marketplace itself first: revoking the deploy key does not remove attacker commits already on public `main`, and installed clients auto-update from it, so make `hov-marketplace` private or reset `main` to the last trusted commit with a trusted credential. Quarantine the announce route next: set a temporary quarantine value for `TOOL_RELEASE_ANNOUNCE_SECRET` in Vercel production (or disable the route), redeploy, and verify the stolen value receives `401`. Only after both containments, audit the caller workflow and finish restoring `hov-marketplace` from the trusted commit, including any attacker-controlled release metadata. Reconcile `tool_release_announcements` and the Discord announcements channel against canonical GitHub releases from the last-known-good point; quarantine or repair unauthorized rows and edit forged messages. Rotate every credential available to the compromised job. Install the final replacement announce secret in Vercel production, redeploy, and prove both directions before distributing it: the stolen and quarantine values receive `401`, and a `{}` probe with the replacement receives the route's `400` validation response. Only then update the selected-repository organization secret. Restore selected-repository access only after both repositories and announcement state are trusted, then rerun the release workflow. If only the announce secret was exposed outside a release job, follow the same containment, reconciliation, redeploy, `401` and `400` proof, and organization-secret rotation steps without changing the deploy key.
 
 ## Final evidence checklist
 
