@@ -200,9 +200,9 @@ CUTOVER
 
 Delete the temporary token in GitHub settings now, success or failure. A mid-bootstrap failure leaves the release train frozen, which is the safe state: rerun the block to completion before continuing.
 
-Set `TOOL_RELEASE_ANNOUNCE_SECRET` in the StartupBros production deployment environment to the same dedicated value, then redeploy the app. Prove the wiring after the redeploy: an unauthenticated request receives `401` and a `{}` probe with the configured secret receives the route's `400` validation response. For the announcement test fire only, point `DISCORD_CHANNEL_ANNOUNCEMENTS_ID` at the test announcements channel.
+Set `TOOL_RELEASE_ANNOUNCE_SECRET` in the StartupBros production deployment environment to the same dedicated value, then redeploy the app. Prove the wiring after the redeploy: an unauthenticated request receives `401` and a `{}` probe with the configured secret receives the route's `400` validation response. Confirm `DISCORD_CHANNEL_ANNOUNCEMENTS_ID` is configured. For the announcement test fire only, set the dedicated `DISCORD_CHANNEL_TOOL_RELEASES_ID` to the test announcements channel: the route resolves that variable and falls back to the announcements channel, so shared production senders (event publication, going-live notifications, lifecycle operations) are never repointed. This requires the tool-release channel isolation change (pushbot #1020) deployed to production first.
 
-Now run the announcement endpoint test fire (see that section) while both workflows are still disabled, so a real release can never race the test-channel override. After the test fire and its ledger cleanup pass, restore `DISCORD_CHANNEL_ANNOUNCEMENTS_ID` to the production announcements channel, redeploy, and repeat the `401` and `400` probes. Only then continue below.
+Now run the announcement endpoint test fire (see that section) while both workflows are still disabled, so a real release can never race the test-channel override. After the test fire and its ledger cleanup pass, set `DISCORD_CHANNEL_TOOL_RELEASES_ID` to the production announcements channel (or remove it to use the fallback) and redeploy. Verify the restore by reading the deployed value back, for example by pulling the production environment and comparing the variable to the production announcements channel ID. The authenticated `{}` probe cannot verify channel routing: the route validates the payload schema before it reads the channel, so it returns `400` regardless of channel configuration. Only then continue below.
 
 Audit the frozen window before re-enabling anything, so an audit failure fails closed with the train still frozen. Re-enablement is all-or-nothing: a failure re-disables whatever was enabled, and both workflow states are verified `active` before the trap clears. This needs only repository read and write access, so it can run from the normal authenticated shell:
 
@@ -221,22 +221,30 @@ for repo in StartupBros-com/token-eater StartupBros-com/pro-gate; do
   cmp "$snapshot_dir/${slug}.before.tsv" "$snapshot_dir/${slug}.after.tsv"
   cmp "$snapshot_dir/${slug}.tags.before.tsv" "$snapshot_dir/${slug}.tags.after.tsv"
 done
-trap 'gh workflow disable release-train.yml --repo StartupBros-com/token-eater || true
-  gh workflow disable release-train.yml --repo StartupBros-com/pro-gate || true' ERR
+cleanup_enable_failure() {
+  for repo in StartupBros-com/token-eater StartupBros-com/pro-gate; do
+    gh workflow disable release-train.yml --repo "$repo" || true
+    state="$(gh api "repos/${repo}/actions/workflows/release-train.yml" --jq .state)" || state=unknown
+    if [ "$state" != disabled_manually ]; then
+      printf 'ALERT: %s is %s, not verified disabled; resolve manually now.\n' "$repo" "$state"
+    fi
+  done
+}
+trap cleanup_enable_failure EXIT INT TERM
 gh workflow enable release-train.yml --repo StartupBros-com/token-eater
 gh workflow enable release-train.yml --repo StartupBros-com/pro-gate
 for repo in StartupBros-com/token-eater StartupBros-com/pro-gate; do
   state="$(gh api "repos/${repo}/actions/workflows/release-train.yml" --jq .state)"
   [ "$state" = active ]
 done
-trap - ERR
+trap - EXIT INT TERM
 ```
 
 If both comparisons match, the release lock held, the cutover is clean, and the train is live again.
 
 If either comparison differs, the release lock was violated. Keep the affected repository's workflow disabled, classify the difference from the two snapshot files, and reconcile before re-enabling it:
 
-- A release was published, promoted from draft, or edited: first compare the base64 name and body columns against the before snapshot and restore or explicitly approve the content, so replay cannot bless tampered notes. Then re-enable that workflow and re-save the affected release so GitHub emits a fresh `release.edited` event, fetching the notes into a checked file first so a failed read can never overwrite the canonical body. Watch the resulting run, then confirm the marketplace pin, the ledger row, and the Discord message.
+- A release was published, promoted from draft, or its name or body was edited: first compare the base64 name and body columns against the before snapshot and restore or explicitly approve the content, so replay cannot bless tampered notes. Then re-enable that workflow and re-save the affected release so GitHub emits a fresh `release.edited` event, fetching the notes into a checked file first so a failed read can never overwrite the canonical body. Watch the resulting run, then confirm the marketplace pin, the ledger row, and the Discord message.
 
 ```bash
 #!/usr/bin/env bash
@@ -251,7 +259,7 @@ gh release edit '<tag>' --repo '<owner/repo>' --notes-file "$notes_file"
 
 - The affected release is no longer the latest stable: replay cannot re-announce it, because callers promote only the current latest stable release. Announce that exact release by posting its payload directly to the tool-release route with the announce secret, exactly as in the synthetic announcement test fire, then verify its ledger row and Discord message.
 - Only the tag snapshot differs: a Git tag was moved without touching release metadata. The callers resolve that mutable tag to `SOURCE_SHA`, so the trusted source may have changed. Treat this like deletion or demotion, not replay.
-- A snapshotted release was deleted, retagged, or demoted to draft or prerelease: the marketplace may be pinned to a withdrawn release, and the rollback guard makes replay a silent no-op. Treat this as an incident: keep the train frozen and follow the release-job credential exposure recovery's reconciliation ordering before re-enabling anything.
+- A snapshotted release was deleted, retagged, demoted to draft or prerelease, or its asset set changed (IDs, names, sizes, or digests): never replay. A withdrawn release makes replay a silent no-op under the rollback guard, and replaying tampered assets would download, verify, and distribute attacker-controlled code whose archive and checksum agree with each other. Treat this as an incident: keep the train frozen, restore the exact trusted assets or publish a new release built from trusted source, verify its digests against an independent trusted build record, and follow the release-job credential exposure recovery's reconciliation ordering before re-enabling anything.
 
 Declare the cutover complete only when the marketplace pin, the `tool_release_announcements` ledger, and the Discord announcements channel all match canonical GitHub releases. This terminal reconciliation is the authoritative check; it also catches any historical run that failed between its marketplace push and its announcement, without any run-level forensics.
 
@@ -351,7 +359,7 @@ Open and merge the content PR, wait for deployment and content-sync CI, then ver
 
 ## Announcement endpoint test fire
 
-Run this while both release-train workflows are still disabled and the test announcements channel override is active, so a real release can never race the override. Call the deployed route using a synthetic release ID. The cutover block scoped the announce secret to its own child shell, so it is not present in your environment; reload it from the protected secret file, use it, and unset it immediately afterward:
+Run this while both release-train workflows are still disabled and `DISCORD_CHANNEL_TOOL_RELEASES_ID` points at the test announcements channel, so a real release can never race the override and no shared production sender is affected. Call the deployed route using a synthetic release ID. The cutover block scoped the announce secret to its own child shell, so it is not present in your environment; reload it from the protected secret file, use it, and unset it immediately afterward:
 
 ```bash
 TOOL_RELEASE_ANNOUNCE_SECRET="$(cat '<announce secret path>')"
