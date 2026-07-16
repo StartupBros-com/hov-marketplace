@@ -203,7 +203,10 @@ If either comparison differs, the release lock was violated. Keep the affected r
 - A release was published, promoted from draft, or edited: re-enable that workflow, then re-save the affected release so GitHub emits a fresh `release.edited` event, fetching the notes into a checked file first so a failed read can never overwrite the canonical body. Watch the resulting run, then confirm the marketplace pin, the ledger row, and the Discord message.
 
 ```bash
+#!/usr/bin/env bash
+set -euo pipefail
 notes_file="$(mktemp)"
+trap 'rm -f "$notes_file"' EXIT
 gh release view '<tag>' --repo '<owner/repo>' --json body --jq .body > "$notes_file"
 gh release edit '<tag>' --repo '<owner/repo>' --notes-file "$notes_file"
 ```
@@ -309,9 +312,10 @@ Open and merge the content PR, wait for deployment and content-sync CI, then ver
 
 ## Announcement endpoint test fire
 
-Before the first real stable release, call the deployed route using a synthetic release ID and the test announcements channel:
+Before the first real stable release, call the deployed route using a synthetic release ID and the test announcements channel. The cutover block scoped the announce secret to its own child shell, so it is not present in your environment; reload it from the protected secret file, use it, and unset it immediately afterward:
 
 ```bash
+TOOL_RELEASE_ANNOUNCE_SECRET="$(cat '<announce secret path>')"
 curl --fail-with-body \
   -H 'content-type: application/json' \
   -H "x-tool-release-announce-secret: $TOOL_RELEASE_ANNOUNCE_SECRET" \
@@ -325,6 +329,7 @@ curl --fail-with-body \
     "notesSummary":"Release train test fire"
   }' \
   https://members.startupbros.com/api/internal/ops/tool-releases
+unset TOOL_RELEASE_ANNOUNCE_SECRET
 ```
 
 Run the same request again. Confirm exactly one Discord message exists and the second request edits that message. Remove or archive the test message using the normal Discord edit-in-place convention, not delete and repost.
