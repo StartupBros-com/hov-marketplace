@@ -104,6 +104,7 @@ Set repository configuration. The block freezes both release-train workflows for
 GH_TOKEN='<short-expiration token>' \
 HOV_MARKETPLACE_DEPLOY_KEY="$(cat '<private deploy key path>')" \
 TOOL_RELEASE_ANNOUNCE_SECRET="$(cat '<announce secret path>')" \
+CUTOVER_SNAPSHOT_DIR='<durable snapshot directory>' \
 bash -euo pipefail -s <<'CUTOVER'
 : "${GH_TOKEN:?short-expiration organization admin token is required}"
 : "${HOV_MARKETPLACE_DEPLOY_KEY:?private deploy key is required}"
@@ -111,14 +112,23 @@ bash -euo pipefail -s <<'CUTOVER'
 unset GITHUB_TOKEN
 gh auth status -h github.com
 
-# Freeze the release train before the first secret write. Record the newest
-# release id per caller: disabled workflows never create runs for release
-# events, so anything published or edited while frozen must be replayed after
-# the cutover.
+# Freeze the release train before the first secret write. Save a complete
+# release-state snapshot outside the child shell: ID alone cannot detect an
+# edit or publication of an existing draft. The workflow-state API makes the
+# freeze idempotent when this block is rerun after a failure.
+snapshot_dir="${CUTOVER_SNAPSHOT_DIR:?writable snapshot directory is required}"
+mkdir -p "$snapshot_dir"
 for repo in StartupBros-com/token-eater StartupBros-com/pro-gate; do
-  newest_id="$(gh api "repos/${repo}/releases?per_page=1" --jq '.[0].id // 0')"
-  printf '%s pre-cutover newest release id: %s\n' "$repo" "$newest_id"
-  gh workflow disable release-train.yml --repo "$repo"
+  slug="${repo##*/}"
+  gh api --paginate "repos/${repo}/releases?per_page=100" \
+    --jq '.[] | [.id,.tag_name,.draft,.prerelease,.published_at,.updated_at] | @tsv' |
+    sort > "$snapshot_dir/${slug}.before.tsv"
+  workflow_state="$(gh api "repos/${repo}/actions/workflows/release-train.yml" --jq .state)"
+  if [ "$workflow_state" = active ]; then
+    gh workflow disable release-train.yml --repo "$repo"
+  else
+    [ "$workflow_state" = disabled_manually ]
+  fi
 done
 
 # Drain live runs to a terminal state instead of cancelling: cancellation is
@@ -127,7 +137,7 @@ done
 # the cutover instead of reading as "no active runs".
 for repo in StartupBros-com/token-eater StartupBros-com/pro-gate; do
   for _ in $(seq 1 90); do
-    active="$(gh run list --workflow release-train.yml --repo "$repo" \
+    active="$(gh run list --all --workflow release-train.yml --repo "$repo" \
       --json status --jq '[.[] | select(.status != "completed")] | length')"
     [ "$active" -eq 0 ] && break
     sleep 10
@@ -173,21 +183,32 @@ Re-enable the release train only after those probes pass. This needs only reposi
 gh workflow enable release-train.yml --repo StartupBros-com/token-eater
 gh workflow enable release-train.yml --repo StartupBros-com/pro-gate
 
-# Detect events dropped while the train was frozen.
+# Detect every release mutation dropped while the train was frozen. Use the
+# same durable directory supplied as CUTOVER_SNAPSHOT_DIR above.
+snapshot_dir='<durable snapshot directory>'
 for repo in StartupBros-com/token-eater StartupBros-com/pro-gate; do
-  newest_id="$(gh api "repos/${repo}/releases?per_page=1" --jq '.[0].id // 0')"
-  printf '%s post-cutover newest release id: %s\n' "$repo" "$newest_id"
+  slug="${repo##*/}"
+  gh api --paginate "repos/${repo}/releases?per_page=100" \
+    --jq '.[] | [.id,.tag_name,.draft,.prerelease,.published_at,.updated_at] | @tsv' |
+    sort > "$snapshot_dir/${slug}.after.tsv"
+  if ! cmp -s "$snapshot_dir/${slug}.before.tsv" "$snapshot_dir/${slug}.after.tsv"; then
+    printf '%s changed while the release train was frozen\n' "$repo"
+  fi
 done
 ```
 
-Release events are the only trigger for either caller; there is no manual dispatch. If a post-cutover id differs from its pre-cutover snapshot, or any release was edited during the window, replay each affected release by re-saving it, which emits a fresh `release.edited` event:
+Release events are the only trigger for either caller; there is no manual dispatch. If either complete snapshot changed, replay every current non-draft, non-prerelease release in that repository by re-saving it, which emits a fresh `release.edited` event. Replaying all stable releases avoids trying to infer which edit or draft publication emitted a dropped event:
 
 ```bash
-gh release edit "$tag" --repo "$repo" \
-  --notes "$(gh release view "$tag" --repo "$repo" --json body --jq .body)"
+for tag in $(gh release list --repo "$repo" --limit 100 \
+  --json tagName,isDraft,isPrerelease \
+  --jq '.[] | select(.isDraft == false and .isPrerelease == false) | .tagName'); do
+  notes="$(gh release view "$tag" --repo "$repo" --json body --jq .body)"
+  gh release edit "$tag" --repo "$repo" --notes "$notes"
+done
 ```
 
-The release train is idempotent, so replaying an already-promoted release is safe. Watch every replay run to completion and confirm its marketplace promotion and announcement before declaring the cutover complete.
+The release train is idempotent and rejects rollback, so replaying an already-promoted stable release is safe. Watch every replay run to completion and confirm marketplace and announcement state match canonical GitHub releases before declaring the cutover complete.
 
 ### 4. Organization and repository audit
 
