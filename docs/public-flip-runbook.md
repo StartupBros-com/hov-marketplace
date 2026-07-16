@@ -88,7 +88,7 @@ Create one passwordless Ed25519 deploy key for `StartupBros-com/hov-marketplace`
 
 Create one random announce secret dedicated to the tool-release route. Store it once as the organization Actions secret `TOOL_RELEASE_ANNOUNCE_SECRET`, also restricted to `token-eater` and `pro-gate`, and set the same value in the StartupBros production deployment. Do not reuse `INTERNAL_SERVICE_SECRET`, `CRON_SECRET`, or another app secret because those credentials authorize unrelated production operations.
 
-Set repository configuration. Two rules make the mutation window safe without any run orchestration. First, an operator-enforced release lock: you are the only account with release permission in this organization, so do not publish, edit, or delete any release between freezing and the post-cutover audit; the audit verifies the lock held. Second, the block requires a completely idle release train before the first secret write, because a release job that straddles the window could push the marketplace and then fail its announcement with `401`, leaving marketplace and Discord state split.
+Set repository configuration. Two rules make the mutation window safe without any run orchestration. First, an operator-enforced release lock: you are the only account with release permission in this organization, so do not publish, edit, or delete any release, and do not push tags, between freezing and the post-cutover audit; the audit verifies the lock held. Second, the block requires completely idle release producers and trains before the first secret write, because a release job that straddles the window could push the marketplace and then fail its announcement with `401`, leaving marketplace and Discord state split.
 
 ```bash
 # Run as a StartupBros-com organization owner after adding the marketplace deploy key.
@@ -131,6 +131,23 @@ for repo in StartupBros-com/token-eater StartupBros-com/pro-gate; do
     exit 1
   fi
 done
+
+# pro-gate's release.yml publishes runtime releases on tag pushes, so it is a
+# release producer, not just a consumer. Freeze and drain it first, while the
+# train is still active, so no publication can straddle the audit window:
+# every release the producer emits before this point is snapshotted below and
+# consumed by a live train. token-eater has no producer workflow. If the
+# drain finds runs, wait for them to finish and rerun the block.
+producer_state="$(gh api "repos/StartupBros-com/pro-gate/actions/workflows/release.yml" --jq .state)"
+if [ "$producer_state" = active ]; then
+  gh workflow disable release.yml --repo StartupBros-com/pro-gate
+else
+  [ "$producer_state" = disabled_manually ]
+fi
+producer_active="$(gh api --paginate \
+  "repos/StartupBros-com/pro-gate/actions/workflows/release.yml/runs?per_page=100" \
+  --jq '.workflow_runs[] | select(.status != "completed") | .id' | wc -l)"
+[ "$producer_active" -eq 0 ]
 
 # Freeze the release train before the first secret write. Save a complete
 # release-state snapshot, including drafts, names, bodies, asset identities,
@@ -202,7 +219,9 @@ Delete the temporary token in GitHub settings now, success or failure. A mid-boo
 
 Set `TOOL_RELEASE_ANNOUNCE_SECRET` in the StartupBros production deployment environment to the same dedicated value, then redeploy the app. Prove the wiring after the redeploy: an unauthenticated request receives `401` and a `{}` probe with the configured secret receives the route's `400` validation response. Confirm `DISCORD_CHANNEL_ANNOUNCEMENTS_ID` is configured. For the announcement test fire only, set the dedicated `DISCORD_CHANNEL_TOOL_RELEASES_ID` to the test announcements channel: the route resolves that variable and falls back to the announcements channel, so shared production senders (event publication, going-live notifications, lifecycle operations) are never repointed. This requires the tool-release channel isolation change (pushbot #1020) deployed to production first.
 
-Now run the announcement endpoint test fire (see that section) while both workflows are still disabled, so a real release can never race the test-channel override. After the test fire and its ledger cleanup pass, set `DISCORD_CHANNEL_TOOL_RELEASES_ID` to the production announcements channel (or remove it to use the fallback) and redeploy. Verify the restore by reading the deployed value back, for example by pulling the production environment and comparing the variable to the production announcements channel ID. The authenticated `{}` probe cannot verify channel routing: the route validates the payload schema before it reads the channel, so it returns `400` regardless of channel configuration. Only then continue below.
+Now run the announcement endpoint test fire (see that section) while every release workflow is still disabled, so a real release can never race the test-channel override. After the test fire and its ledger cleanup pass, set `DISCORD_CHANNEL_TOOL_RELEASES_ID` to the production announcements channel (or remove it to use the fallback) and redeploy.
+
+Prove the restore end-to-end through the deployment actually serving production traffic, not through configuration readback: pulling the project environment verifies stored values, but a failed, stale, or unpromoted redeploy can pass that check while the live route still targets the test channel, and the authenticated `{}` probe returns `400` before the route ever reads the channel. Confirm the redeploy is the current production deployment, then post one valid canary announcement through the live route using a second synthetic release ID (`900000000000000002`) and confirm the message lands in the production announcements channel. Clean up the canary immediately: remove or archive its Discord message per the test-message convention and delete its ledger row exactly like the test fire's. Only then continue below.
 
 Audit the frozen window before re-enabling anything, so an audit failure fails closed with both trains still frozen. The audit is read-only: it captures every after-snapshot first and then runs every comparison while accumulating failures, so a mismatch in one repository cannot hide simultaneous tampering in the other. This needs only repository read access, so it can run from the normal authenticated shell:
 
@@ -230,19 +249,26 @@ done
 [ "$mismatches" -eq 0 ]
 ```
 
-When the audit passes, re-enable both workflows with this all-or-nothing block. A failure or a delivered `INT` or `TERM` re-disables both workflows, verifies each reaches `disabled_manually`, alerts loudly when it cannot prove that, and terminates instead of resuming:
+When the audit passes, re-enable every frozen workflow with this all-or-nothing block. The trains come up before the pro-gate producer, so a new publication never fires into a disabled consumer. A failure or a delivered `INT` or `TERM` re-disables all three workflows, verifies each reaches `disabled_manually`, alerts loudly when it cannot prove that, and terminates instead of resuming:
 
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
+frozen_workflows() {
+  printf '%s\n' \
+    'StartupBros-com/token-eater release-train.yml' \
+    'StartupBros-com/pro-gate release-train.yml' \
+    'StartupBros-com/pro-gate release.yml'
+}
 cleanup_enable_failure() {
-  for repo in StartupBros-com/token-eater StartupBros-com/pro-gate; do
-    gh workflow disable release-train.yml --repo "$repo" || true
-    state="$(gh api "repos/${repo}/actions/workflows/release-train.yml" --jq .state)" || state=unknown
+  while read -r repo workflow; do
+    gh workflow disable "$workflow" --repo "$repo" || true
+    state="$(gh api "repos/${repo}/actions/workflows/${workflow}" --jq .state)" || state=unknown
     if [ "$state" != disabled_manually ]; then
-      printf 'ALERT: %s is %s, not verified disabled; resolve manually now.\n' "$repo" "$state"
+      printf 'ALERT: %s %s is %s, not verified disabled; resolve manually now.\n' \
+        "$repo" "$workflow" "$state"
     fi
-  done
+  done < <(frozen_workflows)
 }
 on_signal() {
   trap - EXIT INT TERM
@@ -254,18 +280,19 @@ trap 'on_signal 143' TERM
 trap cleanup_enable_failure EXIT
 gh workflow enable release-train.yml --repo StartupBros-com/token-eater
 gh workflow enable release-train.yml --repo StartupBros-com/pro-gate
-for repo in StartupBros-com/token-eater StartupBros-com/pro-gate; do
-  state="$(gh api "repos/${repo}/actions/workflows/release-train.yml" --jq .state)"
+gh workflow enable release.yml --repo StartupBros-com/pro-gate
+while read -r repo workflow; do
+  state="$(gh api "repos/${repo}/actions/workflows/${workflow}" --jq .state)"
   [ "$state" = active ]
-done
+done < <(frozen_workflows)
 trap - EXIT INT TERM
 ```
 
 If the audit passes and the enable block completes, the release lock held, the cutover is clean, and both trains are live again.
 
-If the audit reports any mismatch, the release lock was violated and both workflows are still frozen. Classify every reported difference from the snapshot files, then reconcile:
+If the audit reports any mismatch, the release lock was violated and every release workflow is still frozen. Classify every reported difference from the snapshot files, then reconcile:
 
-- A release was published, promoted from draft, or its name or body was edited: first compare the base64 name and body columns against the before snapshot and restore or explicitly approve the content, so replay cannot bless tampered notes. After every reported difference is reconciled this way, run the all-or-nothing enable block above so both trains come back together, then re-save each affected release so GitHub emits a fresh `release.edited` event, fetching the notes into a checked file first so a failed read can never overwrite the canonical body. Watch each resulting run, then confirm the marketplace pin, the ledger row, and the Discord message.
+- A baseline release was promoted from draft, or its name or body was edited: first compare the base64 name and body columns against the before snapshot and restore or explicitly approve the content, so replay cannot bless tampered notes. This branch applies only to release IDs present in the before snapshot, whose asset identities and digests the audit already verified unchanged. After every reported difference is reconciled this way, run the all-or-nothing enable block above so everything comes back together, then re-save each affected release so GitHub emits a fresh `release.edited` event, fetching the notes into a checked file first so a failed read can never overwrite the canonical body. Watch each resulting run, then confirm the marketplace pin, the ledger row, and the Discord message.
 
 ```bash
 #!/usr/bin/env bash
@@ -278,9 +305,10 @@ gh release view '<tag>' --repo '<owner/repo>' --json body | jq -rj '.body // ""'
 gh release edit '<tag>' --repo '<owner/repo>' --notes-file "$notes_file"
 ```
 
+- A release ID absent from the before snapshot: a release was published new during the window, so there is no trusted asset baseline to compare against, and the pro-gate train verifies only that the archive and its checksum agree with each other. Never replay it. Treat it as an incident: independently verify its tag SHA, build provenance, and every asset digest against trusted build records before enabling or replaying anything for that repository, or delete it and publish a new release built from trusted source.
 - The affected release is no longer the latest stable: replay cannot re-announce it, because callers promote only the current latest stable release. Announce that exact release by posting its payload directly to the tool-release route with the announce secret, exactly as in the synthetic announcement test fire, then verify its ledger row and Discord message.
 - Only the tag snapshot differs: a Git tag was moved without touching release metadata. The callers resolve that mutable tag to `SOURCE_SHA`, so the trusted source may have changed. Treat this like deletion or demotion, not replay.
-- A snapshotted release was deleted, retagged, demoted to draft or prerelease, or its asset set changed (IDs, names, sizes, or digests): never replay. A withdrawn release makes replay a silent no-op under the rollback guard, and replaying tampered assets would download, verify, and distribute attacker-controlled code whose archive and checksum agree with each other. Treat this as an incident: keep the affected repository's workflow frozen, restore the exact trusted assets or publish a new release built from trusted source, verify its digests against an independent trusted build record, and follow the release-job credential exposure recovery's reconciliation ordering before re-enabling it. Explicitly re-enable the unaffected repository's workflow (`gh workflow enable release-train.yml --repo <unaffected>` and verify its state is `active`) so its release events are not silently discarded while the incident is worked.
+- A snapshotted release was deleted, retagged, demoted to draft or prerelease, or its asset set changed (IDs, names, sizes, or digests): never replay. A withdrawn release makes replay a silent no-op under the rollback guard, and replaying tampered assets would download, verify, and distribute attacker-controlled code whose archive and checksum agree with each other. Treat this as an incident: keep every workflow of the affected repository frozen (for pro-gate, both `release-train.yml` and `release.yml`), restore the exact trusted assets or publish a new release built from trusted source, verify its digests against an independent trusted build record, and follow the release-job credential exposure recovery's reconciliation ordering before re-enabling it. Explicitly re-enable the unaffected repository's workflows (`gh workflow enable <workflow> --repo <unaffected>` and verify each state is `active`) so its release events are not silently discarded while the incident is worked.
 
 Declare the cutover complete only when the marketplace pin, the `tool_release_announcements` ledger, and the Discord announcements channel all match canonical GitHub releases. This terminal reconciliation is the authoritative check; it also catches any historical run that failed between its marketplace push and its announcement, without any run-level forensics.
 
@@ -402,12 +430,12 @@ unset TOOL_RELEASE_ANNOUNCE_SECRET
 
 Run the same request again. Confirm exactly one Discord message exists and the second request edits that message. Remove or archive the test message using the normal Discord edit-in-place convention, not delete and repost.
 
-Then remove the synthetic ledger row so the terminal reconciliation can require an exact match with canonical GitHub releases. The ledger intentionally revokes delete from every API role, so run this as the database owner in the Supabase SQL editor, and confirm zero rows remain for the synthetic ID afterward:
+Then remove the synthetic ledger rows (this test fire and, later, the production-channel canary) so the terminal reconciliation can require an exact match with canonical GitHub releases. The ledger intentionally revokes delete from every API role, so run this as the database owner in the Supabase SQL editor, and confirm zero rows remain for the synthetic IDs afterward:
 
 ```sql
 delete from public.tool_release_announcements
 where repository = 'token-eater'
-  and github_release_id = '900000000000000001';
+  and github_release_id in ('900000000000000001', '900000000000000002');
 ```
 
 ## Stable release proof
