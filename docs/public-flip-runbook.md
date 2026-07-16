@@ -94,27 +94,43 @@ Set repository configuration:
 # Run as a StartupBros-com organization owner after adding the marketplace deploy key.
 # Use a disposable CLI login so admin:org is not added to the normal GitHub token.
 (
+  set -euo pipefail
   unset GH_TOKEN GITHUB_TOKEN
-  export GH_CONFIG_DIR="$(mktemp -d)"
-  trap 'rm -rf "$GH_CONFIG_DIR"' EXIT
+  : "${HOV_MARKETPLACE_DEPLOY_KEY:?private deploy key is required}"
+  : "${TOOL_RELEASE_ANNOUNCE_SECRET:?announce secret is required}"
+  gh_config_dir="$(mktemp -d)"
+  export GH_CONFIG_DIR="$gh_config_dir"
+  trap 'rm -rf "$gh_config_dir"' EXIT
   gh auth login -h github.com --web --insecure-storage -s admin:org,repo
   gh auth status -h github.com
 
-printf '%s' "$HOV_MARKETPLACE_DEPLOY_KEY" | gh secret set HOV_MARKETPLACE_DEPLOY_KEY \
-  --org StartupBros-com --repos token-eater,pro-gate
-printf '%s' "$TOOL_RELEASE_ANNOUNCE_SECRET" | gh secret set TOOL_RELEASE_ANNOUNCE_SECRET \
-  --org StartupBros-com --repos token-eater,pro-gate
+  printf '%s' "$HOV_MARKETPLACE_DEPLOY_KEY" | gh secret set HOV_MARKETPLACE_DEPLOY_KEY \
+    --org StartupBros-com --repos token-eater,pro-gate
+  printf '%s' "$TOOL_RELEASE_ANNOUNCE_SECRET" | gh secret set TOOL_RELEASE_ANNOUNCE_SECRET \
+    --org StartupBros-com --repos token-eater,pro-gate
 
-gh variable set TOOL_RELEASE_ANNOUNCE_URL --body 'https://members.startupbros.com/api/internal/ops/tool-releases' --repo StartupBros-com/token-eater
-gh variable set TOOL_RELEASE_ANNOUNCE_URL --body 'https://members.startupbros.com/api/internal/ops/tool-releases' --repo StartupBros-com/pro-gate
+  gh variable set TOOL_RELEASE_ANNOUNCE_URL --body 'https://members.startupbros.com/api/internal/ops/tool-releases' --repo StartupBros-com/token-eater
+  gh variable set TOOL_RELEASE_ANNOUNCE_URL --body 'https://members.startupbros.com/api/internal/ops/tool-releases' --repo StartupBros-com/pro-gate
 
-# Keep syntax validation until all three repositories are public.
-gh variable set HOV_MARKETPLACE_VALIDATION_MODE --body syntax --repo StartupBros-com/token-eater
-gh variable set HOV_MARKETPLACE_VALIDATION_MODE --body syntax --repo StartupBros-com/pro-gate
+  # Keep syntax validation until all three repositories are public.
+  gh variable set HOV_MARKETPLACE_VALIDATION_MODE --body syntax --repo StartupBros-com/token-eater
+  gh variable set HOV_MARKETPLACE_VALIDATION_MODE --body syntax --repo StartupBros-com/pro-gate
+
+  # Fail the bootstrap unless both secrets exist with exactly the two selected
+  # repositories and both callers can read their variables.
+  for secret_name in HOV_MARKETPLACE_DEPLOY_KEY TOOL_RELEASE_ANNOUNCE_SECRET; do
+    gh api "orgs/StartupBros-com/actions/secrets/${secret_name}/repositories" \
+      --jq '[.repositories[].full_name] | sort == ["StartupBros-com/pro-gate","StartupBros-com/token-eater"]' |
+      grep -qx true
+  done
+  for repo in StartupBros-com/token-eater StartupBros-com/pro-gate; do
+    gh variable get TOOL_RELEASE_ANNOUNCE_URL --repo "$repo" >/dev/null
+    gh variable get HOV_MARKETPLACE_VALIDATION_MODE --repo "$repo" >/dev/null
+  done
 )
 ```
 
-Set `TOOL_RELEASE_ANNOUNCE_SECRET` in the StartupBros production deployment environment to the same dedicated value, then redeploy the app. Confirm `DISCORD_CHANNEL_ANNOUNCEMENTS_ID` is configured. For the first smoke only, use the test announcements channel override supported by the deployment environment.
+Set `TOOL_RELEASE_ANNOUNCE_SECRET` in the StartupBros production deployment environment to the same dedicated value, then redeploy the app. Prove the wiring after the redeploy: an unauthenticated request receives `401` and a `{}` probe with the configured secret receives the route's `400` validation response. Confirm `DISCORD_CHANNEL_ANNOUNCEMENTS_ID` is configured. For the first smoke only, use the test announcements channel override supported by the deployment environment.
 
 ### 4. Organization and repository audit
 
@@ -304,7 +320,7 @@ For AE3 and R17, observe Cooper or the first engaged member after the next stabl
 - Announcement defect: edit the existing Discord message. Never delete and repost.
 - Public-source exposure concern discovered after flip: stop release publication and member messaging, preserve evidence, and let Will decide whether to make the affected repository private while remediation is prepared.
 - Vault smoke failure: leave staged pages unpublished or revert the content-only publication commit. Do not add access infrastructure or private clone instructions.
-- Release-job credential exposure: cancel active release runs, remove the marketplace deploy key, and remove the affected caller repository from both organization secrets before rotating anything. Preserve evidence, audit the caller workflow, and restore `hov-marketplace` from a trusted commit, including any attacker-controlled release metadata. Reconcile `tool_release_announcements` and the Discord announcements channel against canonical GitHub releases from the last-known-good point; quarantine or repair unauthorized rows and edit forged messages before restoring access. Rotate every credential available to the compromised job. For the announce secret, update Vercel production, redeploy, verify the old secret receives `401`, then update the organization secret. Restore selected-repository access only after both repositories and announcement state are trusted, then rerun the release workflow. If only the announce secret was exposed outside a release job, follow the same ledger, Discord, redeploy, old-secret rejection, and organization-secret rotation steps without changing the deploy key.
+- Release-job credential exposure: cancel active release runs, remove the marketplace deploy key, and remove the affected caller repository from both organization secrets. Preserve an immutable evidence snapshot, then contain the announce route before any cleanup: set a temporary quarantine value for `TOOL_RELEASE_ANNOUNCE_SECRET` in Vercel production (or disable the route), redeploy, and verify the stolen value receives `401`. Only after containment, audit the caller workflow and restore `hov-marketplace` from a trusted commit, including any attacker-controlled release metadata. Reconcile `tool_release_announcements` and the Discord announcements channel against canonical GitHub releases from the last-known-good point; quarantine or repair unauthorized rows and edit forged messages. Rotate every credential available to the compromised job. Install the final replacement announce secret in Vercel production, redeploy, and prove both directions before distributing it: the stolen and quarantine values receive `401`, and a `{}` probe with the replacement receives the route's `400` validation response. Only then update the selected-repository organization secret. Restore selected-repository access only after both repositories and announcement state are trusted, then rerun the release workflow. If only the announce secret was exposed outside a release job, follow the same containment, reconciliation, redeploy, `401` and `400` proof, and organization-secret rotation steps without changing the deploy key.
 
 ## Final evidence checklist
 
