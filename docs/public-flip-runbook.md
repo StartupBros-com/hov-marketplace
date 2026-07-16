@@ -98,11 +98,13 @@ Set repository configuration. Two rules make the mutation window safe without an
 # repository variables, and repository workflows, and read repository contents
 # for the release snapshots (classic PAT with admin:org and repo, or a
 # fine-grained organization PAT with organization-secrets write,
-# repository-variables write, actions write, and contents read). Supply all
-# credentials as one-command environment assignments so they exist only inside
-# the child shell, and delete the token in GitHub settings immediately after
-# this command returns, whether it succeeded or failed.
-GH_TOKEN='<short-expiration token>' \
+# repository-variables write, actions write, and contents read). Store the
+# token in a mode-0600 file: pasting its literal value into the command line
+# would record it in shell history. Supply all credentials as one-command
+# environment assignments so they exist only inside the child shell, and
+# delete the token in GitHub settings immediately after this command returns,
+# whether it succeeded or failed.
+GH_TOKEN="$(cat '<short-expiration token path>')" \
 HOV_MARKETPLACE_DEPLOY_KEY="$(cat '<private deploy key path>')" \
 TOOL_RELEASE_ANNOUNCE_SECRET="$(cat '<announce secret path>')" \
 CUTOVER_SNAPSHOT_DIR='<durable snapshot directory>' \
@@ -116,24 +118,30 @@ unset GITHUB_TOKEN
 gh auth status -h github.com
 
 # Freeze the release train before the first secret write. Save a complete
-# release-state snapshot, including drafts: ID alone cannot detect an edit or
-# publication of an existing draft. Create the baseline only while
-# transitioning active to disabled; a retry from disabled_manually must reuse
-# the original baseline without overwriting it.
+# release-state snapshot, including drafts, names, bodies, asset identities,
+# and every tag ref with its target SHA: the callers resolve mutable tags to
+# SOURCE_SHA, so a moved tag must be detectable even when release metadata is
+# unchanged. Create the baseline only while transitioning active to disabled;
+# a retry from disabled_manually must reuse the original baseline.
 for repo in StartupBros-com/token-eater StartupBros-com/pro-gate; do
   slug="${repo##*/}"
   baseline="$snapshot_dir/${slug}.before.tsv"
+  tags_baseline="$snapshot_dir/${slug}.tags.before.tsv"
   workflow_state="$(gh api "repos/${repo}/actions/workflows/release-train.yml" --jq .state)"
   if [ "$workflow_state" = active ]; then
-    temporary="$baseline.tmp"
     gh api --paginate "repos/${repo}/releases?per_page=100" \
-      --jq '.[] | [.id,.tag_name,.draft,.prerelease,.published_at,.updated_at] | @tsv' |
-      sort > "$temporary"
-    mv "$temporary" "$baseline"
+      --jq '.[] | [.id,.tag_name,.draft,.prerelease,.published_at,.updated_at,((.name // "") | @base64),((.body // "") | @base64),([.assets[] | "\(.id):\(.name):\(.size):\(.digest // "")"] | join(";"))] | @tsv' |
+      sort > "$baseline.tmp"
+    gh api --paginate "repos/${repo}/git/matching-refs/tags?per_page=100" \
+      --jq '.[] | [.ref, .object.sha, .object.type] | @tsv' |
+      sort > "$tags_baseline.tmp"
+    mv "$baseline.tmp" "$baseline"
+    mv "$tags_baseline.tmp" "$tags_baseline"
     gh workflow disable release-train.yml --repo "$repo"
   else
     [ "$workflow_state" = disabled_manually ]
     [ -f "$baseline" ]
+    [ -f "$tags_baseline" ]
   fi
 done
 
@@ -172,6 +180,18 @@ for repo in StartupBros-com/token-eater StartupBros-com/pro-gate; do
   gh variable get TOOL_RELEASE_ANNOUNCE_URL --repo "$repo" >/dev/null
   gh variable get HOV_MARKETPLACE_VALIDATION_MODE --repo "$repo" >/dev/null
 done
+
+# Repository-level secrets shadow organization secrets with the same name.
+# Fail if any caller still carries one from an earlier rollout.
+for repo in StartupBros-com/token-eater StartupBros-com/pro-gate; do
+  repo_secret_names="$(gh api --paginate "repos/${repo}/actions/secrets?per_page=100" \
+    --jq '.secrets[].name')"
+  if printf '%s\n' "$repo_secret_names" |
+    grep -qx -e TOOL_RELEASE_ANNOUNCE_SECRET -e HOV_MARKETPLACE_DEPLOY_KEY; then
+    printf 'STOP: %s carries a shadowing repository-level secret; delete it and rerun.\n' "$repo"
+    exit 1
+  fi
+done
 CUTOVER
 ```
 
@@ -188,9 +208,13 @@ snapshot_dir='<durable snapshot directory>'
 for repo in StartupBros-com/token-eater StartupBros-com/pro-gate; do
   slug="${repo##*/}"
   gh api --paginate "repos/${repo}/releases?per_page=100" \
-    --jq '.[] | [.id,.tag_name,.draft,.prerelease,.published_at,.updated_at] | @tsv' |
+    --jq '.[] | [.id,.tag_name,.draft,.prerelease,.published_at,.updated_at,((.name // "") | @base64),((.body // "") | @base64),([.assets[] | "\(.id):\(.name):\(.size):\(.digest // "")"] | join(";"))] | @tsv' |
     sort > "$snapshot_dir/${slug}.after.tsv"
+  gh api --paginate "repos/${repo}/git/matching-refs/tags?per_page=100" \
+    --jq '.[] | [.ref, .object.sha, .object.type] | @tsv' |
+    sort > "$snapshot_dir/${slug}.tags.after.tsv"
   cmp "$snapshot_dir/${slug}.before.tsv" "$snapshot_dir/${slug}.after.tsv"
+  cmp "$snapshot_dir/${slug}.tags.before.tsv" "$snapshot_dir/${slug}.tags.after.tsv"
 done
 gh workflow enable release-train.yml --repo StartupBros-com/token-eater
 gh workflow enable release-train.yml --repo StartupBros-com/pro-gate
@@ -200,7 +224,7 @@ If both comparisons match, the release lock held, the cutover is clean, and the 
 
 If either comparison differs, the release lock was violated. Keep the affected repository's workflow disabled, classify the difference from the two snapshot files, and reconcile before re-enabling it:
 
-- A release was published, promoted from draft, or edited: re-enable that workflow, then re-save the affected release so GitHub emits a fresh `release.edited` event, fetching the notes into a checked file first so a failed read can never overwrite the canonical body. Watch the resulting run, then confirm the marketplace pin, the ledger row, and the Discord message.
+- A release was published, promoted from draft, or edited: first compare the base64 name and body columns against the before snapshot and restore or explicitly approve the content, so replay cannot bless tampered notes. Then re-enable that workflow and re-save the affected release so GitHub emits a fresh `release.edited` event, fetching the notes into a checked file first so a failed read can never overwrite the canonical body. Watch the resulting run, then confirm the marketplace pin, the ledger row, and the Discord message.
 
 ```bash
 #!/usr/bin/env bash
@@ -212,6 +236,7 @@ gh release edit '<tag>' --repo '<owner/repo>' --notes-file "$notes_file"
 ```
 
 - The affected release is no longer the latest stable: replay cannot re-announce it, because callers promote only the current latest stable release. Announce that exact release by posting its payload directly to the tool-release route with the announce secret, exactly as in the synthetic announcement test fire, then verify its ledger row and Discord message.
+- Only the tag snapshot differs: a Git tag was moved without touching release metadata. The callers resolve that mutable tag to `SOURCE_SHA`, so the trusted source may have changed. Treat this like deletion or demotion, not replay.
 - A snapshotted release was deleted, retagged, or demoted to draft or prerelease: the marketplace may be pinned to a withdrawn release, and the rollback guard makes replay a silent no-op. Treat this as an incident: keep the train frozen and follow the release-job credential exposure recovery's reconciliation ordering before re-enabling anything.
 
 Declare the cutover complete only when the marketplace pin, the `tool_release_announcements` ledger, and the Discord announcements channel all match canonical GitHub releases. This terminal reconciliation is the authoritative check; it also catches any historical run that failed between its marketplace push and its announcement, without any run-level forensics.
@@ -334,6 +359,14 @@ unset TOOL_RELEASE_ANNOUNCE_SECRET
 
 Run the same request again. Confirm exactly one Discord message exists and the second request edits that message. Remove or archive the test message using the normal Discord edit-in-place convention, not delete and repost.
 
+Then remove the synthetic ledger row so the terminal reconciliation can require an exact match with canonical GitHub releases. The ledger intentionally revokes delete from every API role, so run this as the database owner in the Supabase SQL editor, and confirm zero rows remain for the synthetic ID afterward:
+
+```sql
+delete from public.tool_release_announcements
+where repository = 'token-eater'
+  and github_release_id = '900000000000000001';
+```
+
 ## Stable release proof
 
 For each tool, publish a new stable release newer than the currently promoted marker. This is **Will-owned** and must happen only after the corresponding release assets and notes are ready.
@@ -406,7 +439,7 @@ For AE3 and R17, observe Cooper or the first engaged member after the next stabl
 - Announcement defect: edit the existing Discord message. Never delete and repost.
 - Public-source exposure concern discovered after flip: stop release publication and member messaging, preserve evidence, and let Will decide whether to make the affected repository private while remediation is prepared.
 - Vault smoke failure: leave staged pages unpublished or revert the content-only publication commit. Do not add access infrastructure or private clone instructions.
-- Release-job credential exposure: cancel active release runs, remove the marketplace deploy key, and remove the affected caller repository from both organization secrets. Preserve an immutable evidence snapshot, then contain both distribution surfaces before any cleanup. Quarantine the marketplace itself first: revoking the deploy key does not remove attacker commits already on public `main`, and installed clients auto-update from it, so make `hov-marketplace` private or reset `main` to the last trusted commit with a trusted credential. Quarantine the announce route next: set a temporary quarantine value for `TOOL_RELEASE_ANNOUNCE_SECRET` in Vercel production (or disable the route), redeploy, and verify the stolen value receives `401`. Only after both containments, audit the caller workflow and finish restoring `hov-marketplace` from the trusted commit, including any attacker-controlled release metadata. Reconcile `tool_release_announcements` and the Discord announcements channel against canonical GitHub releases from the last-known-good point; quarantine or repair unauthorized rows and edit forged messages. Rotate every credential available to the compromised job. Install the final replacement announce secret in Vercel production, redeploy, and prove both directions before distributing it: the stolen and quarantine values receive `401`, and a `{}` probe with the replacement receives the route's `400` validation response. Only then update the selected-repository organization secret. Restore selected-repository access only after both repositories and announcement state are trusted, then rerun the release workflow. If only the announce secret was exposed outside a release job, follow the same containment, reconciliation, redeploy, `401` and `400` proof, and organization-secret rotation steps without changing the deploy key.
+- Release-job credential exposure: cancel active release runs, remove the marketplace deploy key, and remove the affected caller repository from both organization secrets. Preserve an immutable evidence snapshot, then contain both distribution surfaces before any cleanup. Quarantine the marketplace itself first: revoking the deploy key does not remove attacker commits already on public `main`, and installed clients auto-update from it, so make `hov-marketplace` private or reset `main` to the last trusted commit with a trusted credential. Quarantine the announce route next: set a temporary quarantine value for `TOOL_RELEASE_ANNOUNCE_SECRET` in Vercel production (or disable the route), redeploy, and verify the stolen value receives `401`. Only after both containments, audit the caller workflow and finish restoring `hov-marketplace` from the trusted commit, including any attacker-controlled release metadata. Reconcile `tool_release_announcements` and the Discord announcements channel against canonical GitHub releases from the last-known-good point; quarantine or repair unauthorized rows and edit forged messages. Rotate every credential available to the compromised job. Install the final replacement announce secret in Vercel production, redeploy, and prove both directions before distributing it: the stolen and quarantine values receive `401`, and a `{}` probe with the replacement receives the route's `400` validation response. Only then update the selected-repository organization secret, and verify neither caller carries a repository-level secret with the same name, which would silently shadow the organization value. Restore selected-repository access only after both repositories and announcement state are trusted, then rerun the release workflow. If only the announce secret was exposed outside a release job, follow the same containment, reconciliation, redeploy, `401` and `400` proof, and organization-secret rotation steps without changing the deploy key.
 
 ## Final evidence checklist
 
