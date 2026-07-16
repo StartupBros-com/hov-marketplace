@@ -98,7 +98,8 @@ Set repository configuration. Two rules make the mutation window safe without an
 # repository variables, and repository workflows, and read repository contents
 # for the release snapshots (classic PAT with admin:org and repo, or a
 # fine-grained organization PAT with organization-secrets write,
-# repository-variables write, actions write, and contents read). Store the
+# repository-variables write, actions write, contents read, and
+# repository-secrets read for the shadow check). Store the
 # token in a mode-0600 file: pasting its literal value into the command line
 # would record it in shell history. Supply all credentials as one-command
 # environment assignments so they exist only inside the child shell, and
@@ -116,6 +117,20 @@ snapshot_dir="${CUTOVER_SNAPSHOT_DIR:?writable snapshot directory is required}"
 mkdir -p "$snapshot_dir"
 unset GITHUB_TOKEN
 gh auth status -h github.com
+
+# Repository-level secrets shadow organization secrets with the same name.
+# Preflight this read-only check before freezing or mutating anything, so a
+# missing token permission or a shadowing secret aborts while the train is
+# still untouched.
+for repo in StartupBros-com/token-eater StartupBros-com/pro-gate; do
+  repo_secret_names="$(gh api --paginate "repos/${repo}/actions/secrets?per_page=100" \
+    --jq '.secrets[].name')"
+  if printf '%s\n' "$repo_secret_names" |
+    grep -qx -e TOOL_RELEASE_ANNOUNCE_SECRET -e HOV_MARKETPLACE_DEPLOY_KEY; then
+    printf 'STOP: %s carries a shadowing repository-level secret; delete it and rerun.\n' "$repo"
+    exit 1
+  fi
+done
 
 # Freeze the release train before the first secret write. Save a complete
 # release-state snapshot, including drafts, names, bodies, asset identities,
@@ -180,26 +195,16 @@ for repo in StartupBros-com/token-eater StartupBros-com/pro-gate; do
   gh variable get TOOL_RELEASE_ANNOUNCE_URL --repo "$repo" >/dev/null
   gh variable get HOV_MARKETPLACE_VALIDATION_MODE --repo "$repo" >/dev/null
 done
-
-# Repository-level secrets shadow organization secrets with the same name.
-# Fail if any caller still carries one from an earlier rollout.
-for repo in StartupBros-com/token-eater StartupBros-com/pro-gate; do
-  repo_secret_names="$(gh api --paginate "repos/${repo}/actions/secrets?per_page=100" \
-    --jq '.secrets[].name')"
-  if printf '%s\n' "$repo_secret_names" |
-    grep -qx -e TOOL_RELEASE_ANNOUNCE_SECRET -e HOV_MARKETPLACE_DEPLOY_KEY; then
-    printf 'STOP: %s carries a shadowing repository-level secret; delete it and rerun.\n' "$repo"
-    exit 1
-  fi
-done
 CUTOVER
 ```
 
 Delete the temporary token in GitHub settings now, success or failure. A mid-bootstrap failure leaves the release train frozen, which is the safe state: rerun the block to completion before continuing.
 
-Set `TOOL_RELEASE_ANNOUNCE_SECRET` in the StartupBros production deployment environment to the same dedicated value, then redeploy the app. Prove the wiring after the redeploy: an unauthenticated request receives `401` and a `{}` probe with the configured secret receives the route's `400` validation response. Confirm `DISCORD_CHANNEL_ANNOUNCEMENTS_ID` is configured. For the first smoke only, use the test announcements channel override supported by the deployment environment.
+Set `TOOL_RELEASE_ANNOUNCE_SECRET` in the StartupBros production deployment environment to the same dedicated value, then redeploy the app. Prove the wiring after the redeploy: an unauthenticated request receives `401` and a `{}` probe with the configured secret receives the route's `400` validation response. For the announcement test fire only, point `DISCORD_CHANNEL_ANNOUNCEMENTS_ID` at the test announcements channel.
 
-Audit the frozen window before re-enabling anything, so an audit failure fails closed with the train still frozen. This needs only repository read and write access, so it can run from the normal authenticated shell:
+Now run the announcement endpoint test fire (see that section) while both workflows are still disabled, so a real release can never race the test-channel override. After the test fire and its ledger cleanup pass, restore `DISCORD_CHANNEL_ANNOUNCEMENTS_ID` to the production announcements channel, redeploy, and repeat the `401` and `400` probes. Only then continue below.
+
+Audit the frozen window before re-enabling anything, so an audit failure fails closed with the train still frozen. Re-enablement is all-or-nothing: a failure re-disables whatever was enabled, and both workflow states are verified `active` before the trap clears. This needs only repository read and write access, so it can run from the normal authenticated shell:
 
 ```bash
 #!/usr/bin/env bash
@@ -216,8 +221,15 @@ for repo in StartupBros-com/token-eater StartupBros-com/pro-gate; do
   cmp "$snapshot_dir/${slug}.before.tsv" "$snapshot_dir/${slug}.after.tsv"
   cmp "$snapshot_dir/${slug}.tags.before.tsv" "$snapshot_dir/${slug}.tags.after.tsv"
 done
+trap 'gh workflow disable release-train.yml --repo StartupBros-com/token-eater || true
+  gh workflow disable release-train.yml --repo StartupBros-com/pro-gate || true' ERR
 gh workflow enable release-train.yml --repo StartupBros-com/token-eater
 gh workflow enable release-train.yml --repo StartupBros-com/pro-gate
+for repo in StartupBros-com/token-eater StartupBros-com/pro-gate; do
+  state="$(gh api "repos/${repo}/actions/workflows/release-train.yml" --jq .state)"
+  [ "$state" = active ]
+done
+trap - ERR
 ```
 
 If both comparisons match, the release lock held, the cutover is clean, and the train is live again.
@@ -231,7 +243,9 @@ If either comparison differs, the release lock was violated. Keep the affected r
 set -euo pipefail
 notes_file="$(mktemp)"
 trap 'rm -f "$notes_file"' EXIT
-gh release view '<tag>' --repo '<owner/repo>' --json body --jq .body > "$notes_file"
+# jq -rj preserves the exact bytes: gh --jq would append a newline that
+# gh release edit --notes-file submits verbatim, mutating the audited body.
+gh release view '<tag>' --repo '<owner/repo>' --json body | jq -rj '.body // ""' > "$notes_file"
 gh release edit '<tag>' --repo '<owner/repo>' --notes-file "$notes_file"
 ```
 
@@ -337,7 +351,7 @@ Open and merge the content PR, wait for deployment and content-sync CI, then ver
 
 ## Announcement endpoint test fire
 
-Before the first real stable release, call the deployed route using a synthetic release ID and the test announcements channel. The cutover block scoped the announce secret to its own child shell, so it is not present in your environment; reload it from the protected secret file, use it, and unset it immediately afterward:
+Run this while both release-train workflows are still disabled and the test announcements channel override is active, so a real release can never race the override. Call the deployed route using a synthetic release ID. The cutover block scoped the announce secret to its own child shell, so it is not present in your environment; reload it from the protected secret file, use it, and unset it immediately afterward:
 
 ```bash
 TOOL_RELEASE_ANNOUNCE_SECRET="$(cat '<announce secret path>')"
@@ -439,7 +453,7 @@ For AE3 and R17, observe Cooper or the first engaged member after the next stabl
 - Announcement defect: edit the existing Discord message. Never delete and repost.
 - Public-source exposure concern discovered after flip: stop release publication and member messaging, preserve evidence, and let Will decide whether to make the affected repository private while remediation is prepared.
 - Vault smoke failure: leave staged pages unpublished or revert the content-only publication commit. Do not add access infrastructure or private clone instructions.
-- Release-job credential exposure: cancel active release runs, remove the marketplace deploy key, and remove the affected caller repository from both organization secrets. Preserve an immutable evidence snapshot, then contain both distribution surfaces before any cleanup. Quarantine the marketplace itself first: revoking the deploy key does not remove attacker commits already on public `main`, and installed clients auto-update from it, so make `hov-marketplace` private or reset `main` to the last trusted commit with a trusted credential. Quarantine the announce route next: set a temporary quarantine value for `TOOL_RELEASE_ANNOUNCE_SECRET` in Vercel production (or disable the route), redeploy, and verify the stolen value receives `401`. Only after both containments, audit the caller workflow and finish restoring `hov-marketplace` from the trusted commit, including any attacker-controlled release metadata. Reconcile `tool_release_announcements` and the Discord announcements channel against canonical GitHub releases from the last-known-good point; quarantine or repair unauthorized rows and edit forged messages. Rotate every credential available to the compromised job. Install the final replacement announce secret in Vercel production, redeploy, and prove both directions before distributing it: the stolen and quarantine values receive `401`, and a `{}` probe with the replacement receives the route's `400` validation response. Only then update the selected-repository organization secret, and verify neither caller carries a repository-level secret with the same name, which would silently shadow the organization value. Restore selected-repository access only after both repositories and announcement state are trusted, then rerun the release workflow. If only the announce secret was exposed outside a release job, follow the same containment, reconciliation, redeploy, `401` and `400` proof, and organization-secret rotation steps without changing the deploy key.
+- Release-job credential exposure: cancel active release runs, remove the marketplace deploy key, and remove the affected caller repository from both organization secrets. Preserve an immutable evidence snapshot, then contain both distribution surfaces before any cleanup. Quarantine the marketplace itself first: revoking the deploy key does not remove attacker commits already on public `main`, and installed clients auto-update from it, so make `hov-marketplace` private or reset `main` to the last trusted commit with a trusted credential. Quarantine the announce route next: set a temporary quarantine value for `TOOL_RELEASE_ANNOUNCE_SECRET` in Vercel production (or disable the route), redeploy, and verify the stolen value receives `401`. Only after both containments, audit the caller workflow and finish restoring `hov-marketplace` from the trusted commit, including any attacker-controlled release metadata. Reconcile `tool_release_announcements` and the Discord announcements channel against canonical GitHub releases from the last-known-good point; quarantine or repair unauthorized rows and edit forged messages. Server-side restoration alone is not sufficient, because installed clients auto-update from the marketplace: record the compromise window from the evidence snapshot, identify and notify installs that updated during it, publish a new monotonically higher trusted release (or instruct a clean reinstall) so every client moves off the malicious pin, rotate any credential the tools can reach on member machines, and verify client remediation before reopening distribution. Rotate every credential available to the compromised job. Install the final replacement announce secret in Vercel production, redeploy, and prove both directions before distributing it: the stolen and quarantine values receive `401`, and a `{}` probe with the replacement receives the route's `400` validation response. Only then update the selected-repository organization secret, and verify neither caller carries a repository-level secret with the same name, which would silently shadow the organization value. Restore selected-repository access only after both repositories and announcement state are trusted, then rerun the release workflow. If only the announce secret was exposed outside a release job, follow the same containment, reconciliation, redeploy, `401` and `400` proof, and organization-secret rotation steps without changing the deploy key.
 
 ## Final evidence checklist
 
