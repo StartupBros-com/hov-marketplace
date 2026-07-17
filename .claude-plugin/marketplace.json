@@ -14,9 +14,14 @@
       "source": {
         "source": "url",
         "url": "https://github.com/StartupBros-com/token-eater.git",
-        "sha": "79f99f0f5b79ddd5b7f08f2499be514660970260"
+        "sha": "a4f82047f6da6de838604f4e8c7bfcd65860b629"
       },
-      "description": "Spend expiring AI credits on isolated, verified code cleanup that opens a draft pull request and never merges."
+      "description": "Spend expiring AI credits on isolated, verified code cleanup that opens a draft pull request and never merges.",
+      "metadata": {
+        "version": "0.1.1",
+        "releaseId": 355418357,
+        "releaseTag": "v0.1.1"
+      }
     },
     {
       "name": "pro-gate",
