@@ -28,13 +28,13 @@
       "source": {
         "source": "url",
         "url": "https://github.com/StartupBros-com/pro-gate.git",
-        "sha": "5e8cdce4bb279986d13a2692b9fc5e290293b35a"
+        "sha": "fce6d43f986a7650dfedf58449631c7d18a96306"
       },
       "description": "Run a final pull request review using the Pro model selected by your ChatGPT account, with guided runtime setup and no automatic merge.",
       "metadata": {
-        "version": "0.30.1",
-        "releaseId": 364648834,
-        "releaseTag": "v0.30.1"
+        "version": "0.31.0",
+        "releaseId": 364855585,
+        "releaseTag": "v0.31.0"
       }
     }
   ]
