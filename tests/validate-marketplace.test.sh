@@ -127,4 +127,31 @@ jq '.plugins += [.plugins[0]]' "$WORK/.claude-plugin/marketplace.json" >"$TMP/du
 mv "$TMP/duplicate.json" "$WORK/.claude-plugin/marketplace.json"
 expect_fail "duplicate plugin names" validate syntax
 
+# --- card block (Tool Drop copy lives in the manifest; shape-gated here) ---
+
+write_manifest "$TOKEN_SHA" "$PRO_SHA" 10
+jq '.plugins[0].card = {rows: ["one", "two", "three"], run: "Then run it"}' "$WORK/.claude-plugin/marketplace.json" >"$TMP/card-ok.json"
+mv "$TMP/card-ok.json" "$WORK/.claude-plugin/marketplace.json"
+expect_pass "valid card block accepted" validate syntax
+
+write_manifest "$TOKEN_SHA" "$PRO_SHA" 10
+jq '.plugins[0].card = {rows: ["one", "two"], run: "Then run it"}' "$WORK/.claude-plugin/marketplace.json" >"$TMP/card-tworows.json"
+mv "$TMP/card-tworows.json" "$WORK/.claude-plugin/marketplace.json"
+expect_fail "card must carry exactly three rows" validate syntax
+
+write_manifest "$TOKEN_SHA" "$PRO_SHA" 10
+jq --arg long "$(printf 'x%.0s' $(seq 1 181))" '.plugins[0].card = {rows: [$long, "two", "three"], run: "Then run it"}' "$WORK/.claude-plugin/marketplace.json" >"$TMP/card-longrow.json"
+mv "$TMP/card-longrow.json" "$WORK/.claude-plugin/marketplace.json"
+expect_fail "card row over 180 chars rejected" validate syntax
+
+write_manifest "$TOKEN_SHA" "$PRO_SHA" 10
+jq '.plugins[0].card = {rows: ["one", "two", "three"], run: "Then run it", banner: "nope"}' "$WORK/.claude-plugin/marketplace.json" >"$TMP/card-unknown.json"
+mv "$TMP/card-unknown.json" "$WORK/.claude-plugin/marketplace.json"
+expect_fail "unknown card key rejected" validate syntax
+
+write_manifest "$TOKEN_SHA" "$PRO_SHA" 10
+jq '.plugins[0].card = {rows: ["one", "two", "three"]}' "$WORK/.claude-plugin/marketplace.json" >"$TMP/card-norun.json"
+mv "$TMP/card-norun.json" "$WORK/.claude-plugin/marketplace.json"
+expect_fail "card without run line rejected" validate syntax
+
 printf '%d passing cases, %d expected failures\n' "$pass_count" "$fail_count"

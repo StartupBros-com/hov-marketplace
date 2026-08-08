@@ -21,6 +21,14 @@
         "version": "0.1.1",
         "releaseId": 355418357,
         "releaseTag": "v0.1.1"
+      },
+      "card": {
+        "rows": [
+          "⚡ **Use it or lose it** · your AI credits expire monthly; this spends the leftovers",
+          "🧹 **Safe cleanup** · works in an isolated copy, verifies + reviews its own changes",
+          "🛡️ **You stay in control** · opens a draft PR, never merges without you"
+        ],
+        "run": "Then run `/token-eater` on your messiest repo"
       }
     },
     {
@@ -35,6 +43,14 @@
         "version": "0.31.1",
         "releaseId": 365236927,
         "releaseTag": "v0.31.1"
+      },
+      "card": {
+        "rows": [
+          "⚡ **The deepest review, last** · your ChatGPT Pro model reads the whole PR before merge",
+          "🔍 **Finds what earlier tiers missed** · logic, security, integrity, race conditions",
+          "🛡️ **You stay in control** · findings and a verdict, never an auto-merge"
+        ],
+        "run": "Then run `/pro-gate` on your next PR"
       }
     },
     {
@@ -49,6 +65,14 @@
         "version": "0.3.0",
         "releaseId": 367317957,
         "releaseTag": "v0.3.0"
+      },
+      "card": {
+        "rows": [
+          "⚡ **Did that skill edit actually work?** · a before/after count on one document is not evidence",
+          "🔬 **Three skeptics, then a verdict** · confirmed defects fixed, and a paired comparison with a real confidence interval",
+          "🛡️ **You stay in control** · reports land as inputs to your decision; a reworded description ships only at routing parity"
+        ],
+        "run": "Then run `/skill-tuner:tune` on your most-used SKILL.md"
       }
     },
     {
@@ -63,6 +87,15 @@
         "version": "0.3.3",
         "releaseId": 367298000,
         "releaseTag": "v0.3.3"
+      },
+      "card": {
+        "tagline": "Claude Code plugin · WSL2 only · 2-min setup · auto-updates",
+        "rows": [
+          "⚡ **Your real browser, driven from WSL2** · authenticated dashboards, real screenshots, sessions that survive reboots",
+          "🌉 **Bridges the VM boundary** · native messaging cannot cross it; wsl-cdp connects Claude Code to Chrome, Edge, or Brave over CDP",
+          "🛡️ **Sessions, never passwords** · a dedicated agent profile with browser sign-in disabled; log it into only what agents should touch"
+        ],
+        "run": "Then run `/wsl-cdp:setup` once and point your agent at a real dashboard"
       }
     },
     {
@@ -77,6 +110,14 @@
         "version": "0.2.0",
         "releaseId": 367319024,
         "releaseTag": "v0.2.0"
+      },
+      "card": {
+        "rows": [
+          "⚡ **Auto-memory rots** · notes go stale, supersede each other, and route Claude to old answers",
+          "🧠 **The missing sleep cycle** · deterministic triage, sandboxed drafting, and a recall eval that proves the pass helped",
+          "🛡️ **You stay in control** · every change is a diff you approve by hand; nothing merges or deletes on its own"
+        ],
+        "run": "Then run `/memory-dream:dream` on your busiest project"
       }
     },
     {
@@ -86,11 +127,19 @@
         "url": "https://github.com/StartupBros-com/design-rails.git",
         "sha": "1cd2d99436d073e4a43bf1adb98ff7f9f991e0d1"
       },
-      "description": "Guardrails that keep AI agents on your design system. Posture-check whether a real, agent-wired, CI-enforced design system exists, derive a Google-spec DESIGN.md from the code you already ship, put open taste decisions on visual pages for the human to pick, and ratchet drift budgets that only move down. Read-only on application source \u2014 it authors under design/ and never edits your code.",
+      "description": "Guardrails that keep AI agents on your design system. Posture-check whether a real, agent-wired, CI-enforced design system exists, derive a Google-spec DESIGN.md from the code you already ship, put open taste decisions on visual pages for the human to pick, and ratchet drift budgets that only move down. Read-only on application source — it authors under design/ and never edits your code.",
       "metadata": {
         "version": "0.2.0",
         "releaseId": 367319229,
         "releaseTag": "v0.2.0"
+      },
+      "card": {
+        "rows": [
+          "⚡ **Agents drift off your design system** · every PR nudges colors, spacing, and components a little further apart",
+          "📐 **Rails, not vibes** · a DESIGN.md derived from the code you ship, taste calls on visual pages, drift budgets that only move down",
+          "🛡️ **Read-only on your source** · it authors under design/ and never edits your application code"
+        ],
+        "run": "Then ask your agent to posture-check your design system with `/design-rails`"
       }
     }
   ]
