@@ -45,6 +45,7 @@ expected_source_url() {
     pro-gate) printf '%s\n' 'https://github.com/StartupBros-com/pro-gate.git' ;;
     skill-tuner) printf '%s\n' 'https://github.com/StartupBros-com/skill-tuner.git' ;;
     wsl-cdp) printf '%s\n' 'https://github.com/StartupBros-com/wsl-cdp.git' ;;
+    memory-dream) printf '%s\n' 'https://github.com/StartupBros-com/memory-dream.git' ;;
     *) return 1 ;;
   esac
 }
