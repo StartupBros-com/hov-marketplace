@@ -80,7 +80,7 @@ validate_shape() {
     (.plugins | type == "array" and length > 0) and
     all(.plugins[];
       type == "object" and
-      ([keys[]] - ["name", "source", "description", "metadata"] | length == 0) and
+      ([keys[]] - ["name", "source", "description", "metadata", "card"] | length == 0) and
       (.name | type == "string" and test("^[a-z0-9]+([.-][a-z0-9]+)*$")) and
       (.description | type == "string" and length > 0) and
       (.source | type == "object") and
@@ -93,7 +93,13 @@ validate_shape() {
         ([.metadata | keys[]] - ["version", "releaseId", "releaseTag"] | length == 0) and
         (.metadata.version | type == "string") and
         (.metadata.releaseId | type == "number" and floor == . and . >= 0) and
-        (.metadata.releaseTag | type == "string")))
+        (.metadata.releaseTag | type == "string")) and
+      ((has("card") | not) or
+        (.card | type == "object") and
+        ([.card | keys[]] - ["tagline", "rows", "run"] | length == 0) and
+        (.card.rows | type == "array" and length == 3 and all(.[]; type == "string" and length > 0 and length <= 180)) and
+        (.card.run | type == "string" and length > 0 and length <= 120) and
+        ((.card | has("tagline") | not) or (.card.tagline | type == "string" and length > 0 and length <= 80))))
   ' "$MANIFEST" >/dev/null || fail "marketplace manifest has an invalid shape"
 
   local marketplace_version
