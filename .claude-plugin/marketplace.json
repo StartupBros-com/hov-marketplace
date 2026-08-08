@@ -80,13 +80,13 @@
       "source": {
         "source": "url",
         "url": "https://github.com/StartupBros-com/wsl-cdp.git",
-        "sha": "3c8ee4b27a40610ee8079b964ab14e5c74cf9086"
+        "sha": "1716be821752a19e43e10576e380b7ed03ef75ea"
       },
       "description": "Drive your real, logged-in Windows browser (Chrome, Edge, or Brave) from Claude Code inside WSL2 over the Chrome DevTools Protocol. Read authenticated dashboards, take real screenshots, and run a guided one-time setup; sends native-Windows users to the official extension instead.",
       "metadata": {
-        "version": "0.3.3",
-        "releaseId": 367298000,
-        "releaseTag": "v0.3.3"
+        "version": "0.3.4",
+        "releaseId": 367333753,
+        "releaseTag": "v0.3.4"
       },
       "card": {
         "tagline": "Claude Code plugin \u00b7 WSL2 only \u00b7 2-min setup \u00b7 auto-updates",
