@@ -46,6 +46,7 @@ expected_source_url() {
     skill-tuner) printf '%s\n' 'https://github.com/StartupBros-com/skill-tuner.git' ;;
     wsl-cdp) printf '%s\n' 'https://github.com/StartupBros-com/wsl-cdp.git' ;;
     memory-dream) printf '%s\n' 'https://github.com/StartupBros-com/memory-dream.git' ;;
+    design-rails) printf '%s\n' 'https://github.com/StartupBros-com/design-rails.git' ;;
     *) return 1 ;;
   esac
 }
