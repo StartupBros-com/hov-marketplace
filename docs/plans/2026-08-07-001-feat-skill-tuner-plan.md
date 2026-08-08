@@ -11,6 +11,70 @@ execution: code
 
 # Skill Tuner - Plan
 
+> ## ⚠️ Amended 2026-08-08 — read this before the plan below
+>
+> Implementation reached U11 and overtook several load-bearing decisions here.
+> The body is preserved unedited as the original contract; this block records
+> what changed and why. Where the two disagree, this block wins.
+>
+> **A1. The product is the verdict layer, not an eval harness or a doctrine.**
+> KD1 noted that `/skill-optimizer` would collide with skill-creator's
+> advertised "optimize a skill's description" verb, and treated that as a
+> *naming* problem. It was a capability problem. Anthropic's first-party
+> skill-creator already ships trigger/description evals, `with_skill` vs
+> `without_skill` benchmarking with variance, blind A/B between skill
+> versions, graders, and an eval viewer — all on `claude -p` with no API key,
+> the same architecture KD3 chose. Those parts of this plan were duplicated
+> work.
+>
+> What skill-creator does **not** do is say whether a delta means anything:
+> `aggregate_benchmark.py` reports mean and stddev, and its improvement record
+> stores a bare `grading_result: "won" | "lost" | "tie"` beside a pass rate.
+> skill-tuner now supplies that verdict and reads their artifacts at the file
+> boundary (never their code — no API contract, package-relative imports,
+> marketplace bumps plugin SHAs nightly). Delivered in skill-tuner PR #6,
+> validated against their own implementation across seven tree shapes in PR #7.
+>
+> **A2. R13's gate rule is superseded.** "Equal-or-better confirmed probe
+> findings" is a raw-count threshold, and a threshold cannot express *we could
+> not tell*. The same two doctrines returned **LOST** at n=1, **WON** at n=6
+> and **WORSE** at n=16 under that rule; two of three were noise. Gating is now
+> a paired-by-document comparison with a 95% interval and a stated
+> non-inferiority margin (`tune.py compare`), which reports
+> `better` / `worse` / `not_worse` / `inconclusive`. Evidence:
+> `reports/swapgate{3,4,5}-summary.md`.
+>
+> **A3. KD6 is amended.** "Each rule self-reports its evidence tier *and its
+> falsifier*" becomes: tier stays inline, falsifier moves one hop to
+> `FALSIFIERS.md`. This was forced by measurement, not preference — the
+> apparatus was 22.8% of the document and stripping it moved the gate from
+> *worse* to *inconclusive* (`swapgate4-summary.md`). It is also the doctrine
+> obeying its own progressive-disclosure rule.
+>
+> **A4. The doctrine is demoted to worked example.** It has never beaten the
+> ancestor it forked from: worse → inconclusive → **not_worse**, never better.
+> The differentiator is publishing that measurement at all, not the rules.
+> R13's launch gate therefore no longer blocks anything the way it was written;
+> whether `not_worse` clears the bar is an open product call.
+>
+> **A5. Upstream contribution to skill-creator is impossible.** It is an
+> internal Anthropic plugin; the repo's CI auto-closes external PRs, and
+> `external-pr-scope.js` permits non-members only to add `marketplace.json`
+> entries whose `source.url` already exists. Distribution remains this plan's
+> original path: our own plugin, submitted via the external-plugin form.
+>
+> **A6. Units delivered beyond U7.** U8 (probe quote guard, budget cap,
+> incremental persistence), U9 (provenance chokepoint, `verify`, `compare`,
+> CI), U10 (doctrine v2 + gate), U11 (skill-creator verdict layer +
+> repositioning). 116 tests. Scope boundaries here that said "no A/B authoring
+> evals in v1" still hold, and now hold permanently: skill-creator's
+> with/without benchmark is that eval.
+>
+> **Unchanged and still Will-owned:** public repo, `v<version>` tag at the
+> pinned sha, then the marketplace entry (allowlist line + pinned
+> `marketplace.json` row). hov-marketplace CI validates pinned sources
+> unconditionally.
+
 ## Goal Capsule
 
 - **Objective:** Ship `/skill-tuner` — an OSS Claude Code plugin on the hov marketplace that measurably optimizes agent-consumed documents: evidence-tagged authoring doctrine plus a bundled headless eval runner that proves each change on the adopter's own harness.
