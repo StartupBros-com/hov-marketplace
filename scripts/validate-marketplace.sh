@@ -44,6 +44,7 @@ expected_source_url() {
     token-eater) printf '%s\n' 'https://github.com/StartupBros-com/token-eater.git' ;;
     pro-gate) printf '%s\n' 'https://github.com/StartupBros-com/pro-gate.git' ;;
     skill-tuner) printf '%s\n' 'https://github.com/StartupBros-com/skill-tuner.git' ;;
+    wsl-cdp) printf '%s\n' 'https://github.com/StartupBros-com/wsl-cdp.git' ;;
     *) return 1 ;;
   esac
 }
