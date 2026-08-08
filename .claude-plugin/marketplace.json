@@ -42,13 +42,13 @@
       "source": {
         "source": "url",
         "url": "https://github.com/StartupBros-com/skill-tuner.git",
-        "sha": "ed1722ab2ff9025fc8945393d07e4b53d8ddd612"
+        "sha": "845a39f7707a360afbfe5aee21bd5e80dcd15008"
       },
       "description": "Tell whether a change to an agent-consumed document actually worked. /skill-tuner:tune probes a SKILL.md, AGENTS.md or CLAUDE.md, fixes what three independent skeptics confirm, and proves the description still routes. Paired comparison with a confidence interval, content-hashed provenance with drift detection, and it reads skill-creator benchmark output.",
       "metadata": {
-        "version": "0.2.0",
-        "releaseId": 367166752,
-        "releaseTag": "v0.2.0"
+        "version": "0.3.0",
+        "releaseId": 367317957,
+        "releaseTag": "v0.3.0"
       }
     },
     {
