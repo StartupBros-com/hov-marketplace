@@ -58,13 +58,13 @@
       "source": {
         "source": "url",
         "url": "https://github.com/StartupBros-com/skill-tuner.git",
-        "sha": "845a39f7707a360afbfe5aee21bd5e80dcd15008"
+        "sha": "40482c9ba52ac3891f93d2060a113676941741d8"
       },
       "description": "Tell whether a change to an agent-consumed document actually worked. /skill-tuner:tune probes a SKILL.md, AGENTS.md or CLAUDE.md, fixes what three independent skeptics confirm, and proves the description still routes. Paired comparison with a confidence interval, content-hashed provenance with drift detection, and it reads skill-creator benchmark output.",
       "metadata": {
-        "version": "0.3.0",
-        "releaseId": 367340218,
-        "releaseTag": "v0.3.0"
+        "version": "0.3.1",
+        "releaseId": 367341576,
+        "releaseTag": "v0.3.1"
       },
       "card": {
         "rows": [
@@ -85,7 +85,7 @@
       "description": "Drive your real, logged-in Windows browser (Chrome, Edge, or Brave) from Claude Code inside WSL2 over the Chrome DevTools Protocol. Read authenticated dashboards, take real screenshots, and run a guided one-time setup; sends native-Windows users to the official extension instead.",
       "metadata": {
         "version": "0.3.4",
-        "releaseId": 367333753,
+        "releaseId": 367340810,
         "releaseTag": "v0.3.4"
       },
       "card": {
@@ -130,7 +130,7 @@
       "description": "Guardrails that keep AI agents on your design system. Posture-check whether a real, agent-wired, CI-enforced design system exists, derive a Google-spec DESIGN.md from the code you already ship, put open taste decisions on visual pages for the human to pick, and ratchet drift budgets that only move down. Read-only on application source — it authors under design/ and never edits your code.",
       "metadata": {
         "version": "0.2.1",
-        "releaseId": 367340229,
+        "releaseId": 367340796,
         "releaseTag": "v0.2.1"
       },
       "card": {
