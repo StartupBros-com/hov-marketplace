@@ -87,6 +87,8 @@ check_contract() {
   ! grep -Fq 'ACTIONS_ID_TOKEN_REQUEST_URL' "$workflow" || return 1
 
   grep -Fq 'readonly request_body' "$helper" || return 1
+  grep -Fq -- '--arg releaseId "$RELEASE_ID"' "$helper" || return 1
+  grep -Fq '{operation: $operation, repository: $repository, releaseId: $releaseId} + (if $notesSummary == "" then {} else {notesSummary: $notesSummary} end)' "$helper" || return 1
   grep -Fq 'local -r request_body="$1" expected_sha="$2" oidc_token="$3"' "$helper" || return 1
   grep -Fq 'request_sha="$(sha256_bytes "$request_body")"' "$helper" || return 1
   grep -Fq 'audience="${TOOL_RELEASES_ENDPOINT}#sha256=$request_sha"' "$helper" || return 1
@@ -97,6 +99,9 @@ check_contract() {
   grep -Fq -- '--data-binary "$request_body"' "$helper" || return 1
   grep -Fq '"$TOOL_RELEASES_ENDPOINT"' "$helper" || return 1
   grep -Fq '[[ $# -eq 0 ]] || fail "this helper accepts no arguments"' "$helper" || return 1
+  grep -Fq '[[ "$1" =~ ^[1-9][0-9]*$ ]]' "$helper" || return 1
+  grep -Fq 'is_positive_uint "$RELEASE_ID" || fail "RELEASE_ID must be a positive canonical decimal integer"' "$helper" || return 1
+  grep -Fq 'is_positive_uint "$LATEST_STABLE_ID" || fail "LATEST_STABLE_ID must be a positive canonical decimal integer"' "$helper" || return 1
   ! grep -Fq -- '--location' "$helper" || return 1
 
   send_block="$(sed -n '/^send_request() {/,/^}/p' "$helper")"
@@ -164,6 +169,20 @@ expect_contract_reject "secret header" "$WORKFLOW" "$mutant"
 mutant="$TMP/helper-generic-audience.sh"
 replace_once "$HELPER" "$mutant" 'audience="${TOOL_RELEASES_ENDPOINT}#sha256=$request_sha"' 'audience="$TOOL_RELEASES_ENDPOINT"'
 expect_contract_reject "generic OIDC audience" "$WORKFLOW" "$mutant"
+
+mutant="$TMP/helper-omitted-release-id.sh"
+replace_once "$HELPER" "$mutant" \
+  '{operation: $operation, repository: $repository, releaseId: $releaseId} + (if $notesSummary == "" then {} else {notesSummary: $notesSummary} end)' \
+  '{operation: $operation, repository: $repository} + (if $notesSummary == "" then {} else {notesSummary: $notesSummary} end)'
+expect_contract_reject "omitted release ID body field" "$WORKFLOW" "$mutant"
+
+mutant="$TMP/helper-numeric-release-id.sh"
+replace_once "$HELPER" "$mutant" '--arg releaseId "$RELEASE_ID"' '--argjson releaseId "$RELEASE_ID"'
+expect_contract_reject "numeric release ID body field" "$WORKFLOW" "$mutant"
+
+mutant="$TMP/helper-zero-release-id.sh"
+replace_once "$HELPER" "$mutant" '[[ "$1" =~ ^[1-9][0-9]*$ ]]' '[[ "$1" =~ ^(0|[1-9][0-9]*)$ ]]'
+expect_contract_reject "zero-permitting release ID validation" "$WORKFLOW" "$mutant"
 
 mutant="$TMP/helper-mutable-send-body.sh"
 replace_once "$HELPER" "$mutant" \
@@ -308,13 +327,13 @@ reset_capture() {
 }
 
 run_helper() {
-  local helper="$1" manifest="$2" latest_id="$3" source_sha="$4" release_notes="$5"
-  shift 5
+  local helper="$1" manifest="$2" release_id="$3" latest_id="$4" source_sha="$5" release_notes="$6"
+  shift 6
   env \
     PATH="$FAKE_BIN:$ORIGINAL_PATH" \
     EVENT_ACTION=published \
     REPOSITORY="$FIXTURE_REPOSITORY" \
-    RELEASE_ID="$FIXTURE_RELEASE_ID" \
+    RELEASE_ID="$release_id" \
     RELEASE_TAG="$FIXTURE_TAG" \
     RELEASE_NOTES="$release_notes" \
     RELEASE_PRERELEASE=false \
@@ -361,47 +380,89 @@ assert_one_bound_request() {
 
 VALID_NOTES=$'## Highlights\n- First safe improvement\n- Second exact detail'
 reset_capture
-if ! run_helper "$HELPER" "$MANIFEST" "$FIXTURE_RELEASE_ID" "$SOURCE_SHA" "$VALID_NOTES" >"$TMP/run-output" 2>&1; then
+if ! run_helper "$HELPER" "$MANIFEST" "$FIXTURE_RELEASE_ID" "$FIXTURE_RELEASE_ID" "$SOURCE_SHA" "$VALID_NOTES" >"$TMP/run-output" 2>&1; then
   command cat "$TMP/run-output" >&2
   die "valid fixture"
 fi
-assert_one_bound_request '["notesSummary","operation","repository"]'
+assert_one_bound_request '["notesSummary","operation","releaseId","repository"]'
+expected_valid_body='{"operation":"announce","repository":"fixture-tool","releaseId":"42","notesSummary":"First safe improvement\nSecond exact detail"}'
+[[ "$(<"$BODY_FILE")" == "$expected_valid_body" ]] || die "valid request body bytes did not contain the exact release ID string"
 jq -e \
   --arg repository "$FIXTURE_REPOSITORY" \
+  --arg release_id "$FIXTURE_RELEASE_ID" \
   --arg notes $'First safe improvement\nSecond exact detail' \
-  '.operation == "announce" and .repository == $repository and .notesSummary == $notes and (.notesSummary | length <= 600)' \
+  '.operation == "announce" and .repository == $repository and .releaseId == $release_id and (.releaseId | type == "string") and .notesSummary == $notes and (.notesSummary | length <= 600)' \
   "$BODY_FILE" >/dev/null || die "valid request body values"
 pass "valid fixture sends one exact, bearer-authenticated request to the fixed endpoint"
 
+baseline_audience="$(<"$AUDIENCE_FILE")"
+CHANGED_RELEASE_ID='43'
+CHANGED_MANIFEST="$TMP/release-43.json"
+jq --argjson release_id "$CHANGED_RELEASE_ID" \
+  '(.plugins[0].metadata.releaseId) = $release_id' \
+  "$MANIFEST" >"$CHANGED_MANIFEST"
 reset_capture
-if ! run_helper "$HELPER" "$MANIFEST" "$FIXTURE_RELEASE_ID" "$SOURCE_SHA" '' >"$TMP/run-output" 2>&1; then
+if ! run_helper "$HELPER" "$CHANGED_MANIFEST" "$CHANGED_RELEASE_ID" "$CHANGED_RELEASE_ID" "$SOURCE_SHA" "$VALID_NOTES" >"$TMP/run-output" 2>&1; then
+  command cat "$TMP/run-output" >&2
+  die "changed release ID fixture"
+fi
+assert_one_bound_request '["notesSummary","operation","releaseId","repository"]'
+expected_changed_body='{"operation":"announce","repository":"fixture-tool","releaseId":"43","notesSummary":"First safe improvement\nSecond exact detail"}'
+[[ "$(<"$BODY_FILE")" == "$expected_changed_body" ]] || die "changed request body bytes did not contain the exact release ID string"
+changed_audience="$(<"$AUDIENCE_FILE")"
+[[ "$changed_audience" != "$baseline_audience" ]] || die "changing releaseId did not change the OIDC audience digest"
+pass "changing the exact releaseId string changes the bound OIDC audience digest"
+
+reset_capture
+if ! run_helper "$HELPER" "$MANIFEST" "$FIXTURE_RELEASE_ID" "$FIXTURE_RELEASE_ID" "$SOURCE_SHA" '' >"$TMP/run-output" 2>&1; then
   command cat "$TMP/run-output" >&2
   die "empty notes fixture"
 fi
-assert_one_bound_request '["operation","repository"]'
+assert_one_bound_request '["operation","releaseId","repository"]'
+[[ "$(<"$BODY_FILE")" == '{"operation":"announce","repository":"fixture-tool","releaseId":"42"}' ]] || die "empty-notes request body was not the exact reduced contract"
 pass "empty notes omit notesSummary"
 
 LONG_NOTES="$(python3 -c 'print("é" * 700, end="")')"
 reset_capture
-if ! run_helper "$HELPER" "$MANIFEST" "$FIXTURE_RELEASE_ID" "$SOURCE_SHA" "$LONG_NOTES" >"$TMP/run-output" 2>&1; then
+if ! run_helper "$HELPER" "$MANIFEST" "$FIXTURE_RELEASE_ID" "$FIXTURE_RELEASE_ID" "$SOURCE_SHA" "$LONG_NOTES" >"$TMP/run-output" 2>&1; then
   command cat "$TMP/run-output" >&2
   die "bounded notes fixture"
 fi
-assert_one_bound_request '["notesSummary","operation","repository"]'
+assert_one_bound_request '["notesSummary","operation","releaseId","repository"]'
 jq -e '.notesSummary | length == 600' "$BODY_FILE" >/dev/null || die "notesSummary was not bounded to 600 characters"
 pass "notesSummary is character-safe and bounded"
 
 reset_capture
-if run_helper "$HELPER" "$MANIFEST" "$FIXTURE_RELEASE_ID" "$SOURCE_SHA" "$VALID_NOTES" 'https://attacker.invalid/argument' >"$TMP/run-output" 2>&1; then
+if run_helper "$HELPER" "$MANIFEST" "$FIXTURE_RELEASE_ID" "$FIXTURE_RELEASE_ID" "$SOURCE_SHA" "$VALID_NOTES" 'https://attacker.invalid/argument' >"$TMP/run-output" 2>&1; then
   die "alternate URL argument unexpectedly succeeded"
 fi
 [[ ! -s "$CALLS_FILE" ]] || die "alternate URL argument reached curl"
 pass "alternate URL argument is rejected before mint or send"
 
+expect_invalid_id_no_http() {
+  local label="$1" release_id="$2" latest_id="$3" expected_message="$4"
+  reset_capture
+  if run_helper "$HELPER" "$MANIFEST" "$release_id" "$latest_id" "$SOURCE_SHA" "$VALID_NOTES" >"$TMP/run-output" 2>&1; then
+    die "$label unexpectedly succeeded"
+  fi
+  [[ ! -s "$CALLS_FILE" ]] || die "$label minted or sent a request"
+  grep -Fxq "error: $expected_message" "$TMP/run-output" || die "$label did not emit the deterministic validation error"
+  pass "$label fails before mint or send"
+}
+
+release_id_error='RELEASE_ID must be a positive canonical decimal integer'
+latest_id_error='LATEST_STABLE_ID must be a positive canonical decimal integer'
+expect_invalid_id_no_http "zero RELEASE_ID" 0 "$FIXTURE_RELEASE_ID" "$release_id_error"
+expect_invalid_id_no_http "leading-zero RELEASE_ID" 042 "$FIXTURE_RELEASE_ID" "$release_id_error"
+expect_invalid_id_no_http "malformed RELEASE_ID" invalid "$FIXTURE_RELEASE_ID" "$release_id_error"
+expect_invalid_id_no_http "zero LATEST_STABLE_ID" "$FIXTURE_RELEASE_ID" 0 "$latest_id_error"
+expect_invalid_id_no_http "leading-zero LATEST_STABLE_ID" "$FIXTURE_RELEASE_ID" 042 "$latest_id_error"
+expect_invalid_id_no_http "malformed LATEST_STABLE_ID" "$FIXTURE_RELEASE_ID" invalid "$latest_id_error"
+
 expect_soft_no_http() {
   local label="$1" manifest="$2" latest_id="$3"
   reset_capture
-  if ! run_helper "$HELPER" "$manifest" "$latest_id" "$SOURCE_SHA" "$VALID_NOTES" >"$TMP/run-output" 2>&1; then
+  if ! run_helper "$HELPER" "$manifest" "$FIXTURE_RELEASE_ID" "$latest_id" "$SOURCE_SHA" "$VALID_NOTES" >"$TMP/run-output" 2>&1; then
     command cat "$TMP/run-output" >&2
     die "$label"
   fi
@@ -430,7 +491,7 @@ expect_soft_no_http "card on a nonmatching tuple" "$TMP/mismatch-card.json" "$FI
 expect_soft_no_http "non-latest stable release" "$MANIFEST" 43
 
 reset_capture
-if run_helper "$HELPER" "$MANIFEST" "$FIXTURE_RELEASE_ID" '0000000000000000000000000000000000000000' "$VALID_NOTES" >"$TMP/run-output" 2>&1; then
+if run_helper "$HELPER" "$MANIFEST" "$FIXTURE_RELEASE_ID" "$FIXTURE_RELEASE_ID" '0000000000000000000000000000000000000000' "$VALID_NOTES" >"$TMP/run-output" 2>&1; then
   die "tag/source SHA mismatch unexpectedly succeeded"
 fi
 [[ ! -s "$CALLS_FILE" ]] || die "tag/source SHA mismatch minted or sent a request"
@@ -443,7 +504,7 @@ replace_once "$HELPER" "$body_mutant" \
 chmod +x "$body_mutant"
 expect_contract_reject "post-mint body substitution" "$WORKFLOW" "$body_mutant"
 reset_capture
-if run_helper "$body_mutant" "$MANIFEST" "$FIXTURE_RELEASE_ID" "$SOURCE_SHA" "$VALID_NOTES" >"$TMP/run-output" 2>&1; then
+if run_helper "$body_mutant" "$MANIFEST" "$FIXTURE_RELEASE_ID" "$FIXTURE_RELEASE_ID" "$SOURCE_SHA" "$VALID_NOTES" >"$TMP/run-output" 2>&1; then
   die "post-mint body mutation unexpectedly succeeded"
 fi
 mapfile -t mutation_calls <"$CALLS_FILE"

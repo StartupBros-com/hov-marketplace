@@ -29,8 +29,8 @@ require() {
   [[ -n "${!name:-}" ]] || fail "$name is required"
 }
 
-is_uint() {
-  [[ "$1" =~ ^(0|[1-9][0-9]*)$ ]]
+is_positive_uint() {
+  [[ "$1" =~ ^[1-9][0-9]*$ ]]
 }
 
 notes_summary() {
@@ -109,8 +109,9 @@ announce() {
   request_body="$(jq -cn \
     --arg operation announce \
     --arg repository "$REPOSITORY" \
+    --arg releaseId "$RELEASE_ID" \
     --arg notesSummary "$notes" \
-    '{operation: $operation, repository: $repository} + (if $notesSummary == "" then {} else {notesSummary: $notesSummary} end)')"
+    '{operation: $operation, repository: $repository, releaseId: $releaseId} + (if $notesSummary == "" then {} else {notesSummary: $notesSummary} end)')"
   readonly request_body
   request_sha="$(sha256_bytes "$request_body")"
   audience="${TOOL_RELEASES_ENDPOINT}#sha256=$request_sha"
@@ -162,7 +163,7 @@ main() {
   require REPOSITORY
   require RELEASE_ID
   require RELEASE_TAG
-  is_uint "$RELEASE_ID" || fail "RELEASE_ID must be an unsigned integer"
+  is_positive_uint "$RELEASE_ID" || fail "RELEASE_ID must be a positive canonical decimal integer"
   [[ "$REPOSITORY" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] || fail "REPOSITORY has an invalid shape"
 
   if [[ "${RELEASE_PRERELEASE:-false}" == true || "${RELEASE_DRAFT:-false}" == true ]]; then
@@ -172,7 +173,7 @@ main() {
   [[ "$EVENT_ACTION" == published || "$EVENT_ACTION" == edited ]] || fail "unsupported release action: $EVENT_ACTION"
 
   require LATEST_STABLE_ID
-  is_uint "$LATEST_STABLE_ID" || fail "LATEST_STABLE_ID must be an unsigned integer"
+  is_positive_uint "$LATEST_STABLE_ID" || fail "LATEST_STABLE_ID must be a positive canonical decimal integer"
   if [[ "$RELEASE_ID" != "$LATEST_STABLE_ID" ]]; then
     printf 'release %s is not latest stable %s; no-op\n' "$RELEASE_ID" "$LATEST_STABLE_ID"
     return
