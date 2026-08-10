@@ -22,12 +22,6 @@ name: hov Tool Drop announce
 
 on:
   workflow_call:
-    inputs:
-      announce-url:
-        description: Tool Drop announce endpoint
-        type: string
-        required: false
-        default: 'https://members.startupbros.com/api/internal/ops/tool-releases'
 
 permissions: {}
 
@@ -42,29 +36,38 @@ jobs:
       - name: Check out release commit
         uses: actions/checkout@ac593985615ec2ede58e132d2e21d2b1cbd6127c
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: refs/tags/${{ github.event.release.tag_name }}
           fetch-depth: 0
           persist-credentials: false
-      # AFTER this ancestry check, never before: later steps execute a script
-      # against the CHECKED-OUT TAG's tree, so running tag-sourced content
-      # earlier would let anyone able to push a tag influence a job that mints
-      # an identity token. Every tag-derived input sits below the proof that
-      # the tag descends from the protected default branch.
+      # AFTER this ancestry check, never before: the trusted helper reads the
+      # checked-out tag's VERSION and plugin manifest. Every tag-derived input
+      # stays below the proof that the tag descends from the protected default
+      # branch, and no executable helper code comes from the tag.
       - name: Require release commit on default branch
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           git fetch origin "$DEFAULT_BRANCH"
-          release_sha="$(git rev-list -n 1 "$RELEASE_TAG")"
+          release_sha="$(git rev-list -n 1 "refs/tags/$RELEASE_TAG")"
           git merge-base --is-ancestor "$release_sha" "origin/$DEFAULT_BRANCH"
 
-      - name: Check out hov-marketplace (manifest + announce script)
+      - name: Check out trusted workflow helper
+        uses: actions/checkout@ac593985615ec2ede58e132d2e21d2b1cbd6127c
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: trusted-workflow
+          persist-credentials: false
+
+      # This mutable checkout supplies current catalog data only. No code from
+      # it is executed; the helper above is pinned to the called workflow SHA.
+      - name: Check out current marketplace manifest
         uses: actions/checkout@ac593985615ec2ede58e132d2e21d2b1cbd6127c
         with:
           repository: StartupBros-com/hov-marketplace
           ref: main
-          path: hov-marketplace
+          path: marketplace-data
           persist-credentials: false
 
       - name: Resolve latest stable release
@@ -76,33 +79,19 @@ jobs:
           test -n "$latest_id"
           echo "id=$latest_id" >> "$GITHUB_OUTPUT"
 
-      - name: Mint OIDC identity token
-        id: oidc
-        run: |
-          token="$(curl --fail --silent \
-            -H "authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "$ACTIONS_ID_TOKEN_REQUEST_URL" | jq -r .value)"
-          test -n "$token"
-          echo "::add-mask::$token"
-          echo "token=$token" >> "$GITHUB_OUTPUT"
-
       - name: Announce release
         env:
           EVENT_ACTION: ${{ github.event.action }}
           REPOSITORY: ${{ github.event.repository.name }}
           RELEASE_ID: ${{ github.event.release.id }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
-          RELEASE_NAME: ${{ github.event.release.name || github.event.release.tag_name }}
-          RELEASE_URL: ${{ github.event.release.html_url }}
           RELEASE_NOTES: ${{ github.event.release.body }}
           RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
           RELEASE_DRAFT: ${{ github.event.release.draft }}
           LATEST_STABLE_ID: ${{ steps.stable.outputs.id }}
           SOURCE_ROOT: ${{ github.workspace }}
-          MARKETPLACE_MANIFEST: ${{ github.workspace }}/hov-marketplace/.claude-plugin/marketplace.json
-          ANNOUNCE_URL: ${{ inputs.announce-url }}
-          OIDC_TOKEN: ${{ steps.oidc.outputs.token }}
+          MARKETPLACE_MANIFEST: ${{ github.workspace }}/marketplace-data/.claude-plugin/marketplace.json
         run: |
-          source_sha="$(git rev-list -n 1 "$RELEASE_TAG")"
+          source_sha="$(git rev-list -n 1 "refs/tags/$RELEASE_TAG")"
           export SOURCE_SHA="$source_sha"
-          ./hov-marketplace/scripts/tool-drop-announce.sh
+          ./trusted-workflow/scripts/tool-drop-announce.sh

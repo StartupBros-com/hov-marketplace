@@ -21,12 +21,16 @@ jobs:
           fetch-depth: 0
       - name: Provision pinned CI tools
         run: ./scripts/provision-ci-tools.sh
+      - name: Lint Tool Drop announce scripts
+        run: shellcheck scripts/tool-drop-announce.sh tests/tool-drop-announce.test.sh
       - name: Validate marketplace without network access
         env:
           BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
         run: ./scripts/validate-marketplace.sh syntax
-      - name: Run deterministic fixture tests
+      - name: Run marketplace fixture tests
         run: ./tests/validate-marketplace.test.sh
+      - name: Run Tool Drop announce security tests
+        run: ./tests/tool-drop-announce.test.sh
 
   public-pr-syntax:
     name: Public PR data check

@@ -9,10 +9,9 @@ set -euo pipefail
 # tuple AND carries a card block for the plugin. This script never writes to
 # the marketplace (repins are reviewed PRs) and holds no deploy key.
 #
-# Auth: a GitHub Actions OIDC token (Authorization: Bearer) minted by the
-# workflow; the endpoint verifies the caller repo cryptographically. The
-# legacy x-tool-release-announce-secret header is sent only when
-# ANNOUNCE_SECRET is set (break-glass / transition).
+# Auth: a GitHub Actions OIDC token (Authorization: Bearer) minted only after
+# every preflight passes. Its audience binds the token to the SHA-256 digest of
+# the exact request bytes sent to the one fixed Tool Drop endpoint.
 #
 # Soft exits (loud in the run UI, green in the checks list): marketplace not
 # yet repinned to this release, or no card block registered — both resolve
@@ -22,6 +21,8 @@ fail() {
   printf 'error: %s\n' "$*" >&2
   exit 1
 }
+
+readonly TOOL_RELEASES_ENDPOINT='https://members.startupbros.com/api/internal/ops/tool-releases'
 
 require() {
   local name="$1"
@@ -41,10 +42,10 @@ notes_summary() {
   [[ -n "$notes" ]] || return 0
   bullets="$(printf '%s\n' "$notes" | sed -n '/^##[[:space:]]*Highlights/,/^## /p' | grep -E '^[*•-][[:space:]]' || true)"
   if [[ -z "$bullets" ]]; then
-    if printf '%s\n' "$notes" | grep -qE '^##[[:space:]]*What.?.?s Changed'; then
+    if grep -qE '^##[[:space:]]*What.?.?s Changed' <<<"$notes"; then
       bullets="$(printf '%s\n' "$notes" | sed -n '/^##[[:space:]]*What.\{0,2\}s Changed/,/^## /p' | grep -E '^\*[[:space:]]' || true)"
-    elif [[ "$(printf '%s\n' "$notes" | grep -vE '^[[:space:]]*$' | head -n 1)" == \** ]]; then
-      bullets="$(printf '%s\n' "$notes" | awk '/^[[:space:]]*$/{exit} /^\*[[:space:]]/{print}')"
+    elif [[ "$(awk 'NF { print; exit }' <<<"$notes")" == \** ]]; then
+      bullets="$(awk '/^[[:space:]]*$/{exit} /^\*[[:space:]]/{print}' <<<"$notes")"
     fi
   fi
   if [[ -n "$bullets" ]]; then
@@ -63,34 +64,59 @@ for line in sys.stdin.read().splitlines():
 print("\n".join(out)[:600])'
     return 0
   fi
-  printf '%s' "$notes" | awk 'BEGIN{RS=""} NR==1' | tr '\n' ' ' | cut -c1-600
+  printf '%s' "$notes" \
+    | awk 'BEGIN{RS=""} NR==1' \
+    | tr '\n' ' ' \
+    | python3 -c 'import sys; print(sys.stdin.read()[:600], end="")'
+}
+
+sha256_bytes() {
+  local digest
+  digest="$(printf '%s' "$1" | sha256sum)"
+  digest="${digest%% *}"
+  [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || fail "could not compute request body SHA-256"
+  printf '%s\n' "$digest"
+}
+
+mint_oidc_token() {
+  local -r audience="$1"
+  require ACTIONS_ID_TOKEN_REQUEST_URL
+  require ACTIONS_ID_TOKEN_REQUEST_TOKEN
+  curl --fail-with-body --silent --show-error --get \
+    -H "authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+    --data-urlencode "audience=$audience" \
+    "$ACTIONS_ID_TOKEN_REQUEST_URL" \
+    | jq -er '.value | select(type == "string" and length > 0)'
+}
+
+send_request() {
+  local -r request_body="$1" expected_sha="$2" oidc_token="$3"
+  local actual_sha
+  actual_sha="$(sha256_bytes "$request_body")"
+  [[ "$actual_sha" == "$expected_sha" ]] || fail "request body changed after OIDC mint"
+
+  curl --fail-with-body --silent --show-error \
+    --request POST \
+    -H 'content-type: application/json' \
+    -H "authorization: Bearer $oidc_token" \
+    --data-binary "$request_body" \
+    "$TOOL_RELEASES_ENDPOINT"
 }
 
 announce() {
-  require ANNOUNCE_URL
-  local payload auth_args=()
-  if [[ -n "${OIDC_TOKEN:-}" ]]; then
-    auth_args+=(-H "authorization: Bearer $OIDC_TOKEN")
-  fi
-  if [[ -n "${ANNOUNCE_SECRET:-}" ]]; then
-    auth_args+=(-H "x-tool-release-announce-secret: $ANNOUNCE_SECRET")
-  fi
-  [[ ${#auth_args[@]} -gt 0 ]] || fail "no announce credential: neither OIDC_TOKEN nor ANNOUNCE_SECRET is set"
-  payload="$(jq -cn \
+  local notes request_body request_sha audience oidc_token
+  notes="$(notes_summary)"
+  request_body="$(jq -cn \
     --arg operation announce \
     --arg repository "$REPOSITORY" \
-    --arg releaseId "$RELEASE_ID" \
-    --arg tag "$RELEASE_TAG" \
-    --arg releaseName "$RELEASE_NAME" \
-    --arg releaseUrl "$RELEASE_URL" \
-    --arg notesSummary "$(notes_summary)" \
-    '{operation: $operation, repository: $repository, releaseId: $releaseId, tag: $tag, releaseName: $releaseName, releaseUrl: $releaseUrl} + (if $notesSummary == "" then {} else {notesSummary: $notesSummary} end)')"
-  curl --fail-with-body --silent --show-error \
-    -X POST \
-    -H 'content-type: application/json' \
-    "${auth_args[@]}" \
-    --data "$payload" \
-    "$ANNOUNCE_URL"
+    --arg notesSummary "$notes" \
+    '{operation: $operation, repository: $repository} + (if $notesSummary == "" then {} else {notesSummary: $notesSummary} end)')"
+  readonly request_body
+  request_sha="$(sha256_bytes "$request_body")"
+  audience="${TOOL_RELEASES_ENDPOINT}#sha256=$request_sha"
+  oidc_token="$(mint_oidc_token "$audience")"
+  printf '::add-mask::%s\n' "$oidc_token"
+  send_request "$request_body" "$request_sha" "$oidc_token"
 }
 
 verify_release() {
@@ -103,7 +129,7 @@ verify_release() {
   [[ "$RELEASE_TAG" == "$expected_tag" ]] || fail "release tag $RELEASE_TAG does not match VERSION $version"
   [[ "$manifest_version" == "$version" ]] || fail "plugin manifest version $manifest_version does not match VERSION $version"
   [[ "$(git -C "$SOURCE_ROOT" rev-parse HEAD)" == "$SOURCE_SHA" ]] || fail "checked-out source does not match release commit"
-  [[ "$(git -C "$SOURCE_ROOT" rev-list -n 1 "$RELEASE_TAG")" == "$SOURCE_SHA" ]] || fail "release tag does not resolve to the exact release commit"
+  [[ "$(git -C "$SOURCE_ROOT" rev-list -n 1 "refs/tags/$RELEASE_TAG")" == "$SOURCE_SHA" ]] || fail "release tag does not resolve to the exact release commit"
   printf '%s\n' "$version"
 }
 
@@ -120,18 +146,22 @@ marketplace_lists_release() {
 }
 
 marketplace_has_card() {
-  jq -e --arg name "$REPOSITORY" \
-    'any(.plugins[]; .name == $name and (.card | type == "object"))' \
+  jq -e \
+    --arg name "$REPOSITORY" \
+    --arg sha "$SOURCE_SHA" \
+    --arg version "$RELEASE_VERSION" \
+    --argjson release_id "$RELEASE_ID" \
+    --arg release_tag "$RELEASE_TAG" \
+    'any(.plugins[]; .name == $name and .source.sha == $sha and .metadata.version == $version and .metadata.releaseId == $release_id and .metadata.releaseTag == $release_tag and (.card | type == "object"))' \
     "$MARKETPLACE_MANIFEST" >/dev/null
 }
 
 main() {
+  [[ $# -eq 0 ]] || fail "this helper accepts no arguments"
   require EVENT_ACTION
   require REPOSITORY
   require RELEASE_ID
   require RELEASE_TAG
-  require RELEASE_NAME
-  require RELEASE_URL
   is_uint "$RELEASE_ID" || fail "RELEASE_ID must be an unsigned integer"
   [[ "$REPOSITORY" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] || fail "REPOSITORY has an invalid shape"
 
