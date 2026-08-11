@@ -27,6 +27,8 @@ jobs:
         run: ./scripts/validate-marketplace.sh syntax
       - name: Run deterministic fixture tests
         run: ./tests/validate-marketplace.test.sh
+      - name: Run announce retry tests
+        run: bash ./tests/tool-drop-announce-retry.test.sh
 
   public-pr-syntax:
     name: Public PR data check

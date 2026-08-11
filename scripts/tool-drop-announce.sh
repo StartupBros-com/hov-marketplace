@@ -85,12 +85,46 @@ announce() {
     --arg releaseUrl "$RELEASE_URL" \
     --arg notesSummary "$(notes_summary)" \
     '{operation: $operation, repository: $repository, releaseId: $releaseId, tag: $tag, releaseName: $releaseName, releaseUrl: $releaseUrl} + (if $notesSummary == "" then {} else {notesSummary: $notesSummary} end)')"
-  curl --fail-with-body --silent --show-error \
-    -X POST \
-    -H 'content-type: application/json' \
-    "${auth_args[@]}" \
-    --data "$payload" \
-    "$ANNOUNCE_URL"
+  # Bounded retry honoring Retry-After. The service enforces a global 600s
+  # verification gate per channel (429) and short-lived processing leases
+  # (409, Retry-After: 2) — see hov-marketplace#56: on 2026-08-11 two plugin
+  # releases 6 minutes apart turned a routine bump into three failed one-shot
+  # attempts. 429/409/5xx/transport errors retry with the server's Retry-After
+  # (clamped 5..600s, default attempt*60); anything else fails immediately.
+  local attempt max_attempts=5 status retry_after body_file hdr_file
+  body_file="$(mktemp)"
+  hdr_file="$(mktemp)"
+  for ((attempt = 1; attempt <= max_attempts; attempt++)); do
+    status="$(curl --silent --show-error \
+      --output "$body_file" --dump-header "$hdr_file" \
+      --write-out '%{http_code}' \
+      -X POST \
+      -H 'content-type: application/json' \
+      "${auth_args[@]}" \
+      --data "$payload" \
+      "$ANNOUNCE_URL")" || status=000
+    if [[ "$status" == 2* ]]; then
+      cat "$body_file"
+      return 0
+    fi
+    case "$status" in
+      429 | 409 | 000 | 5*)
+        if ((attempt < max_attempts)); then
+          retry_after="$(awk 'tolower($1) == "retry-after:" {gsub(/\r/, ""); print $2; exit}' "$hdr_file")"
+          [[ "$retry_after" =~ ^[0-9]+$ ]] || retry_after=$((attempt * 60))
+          ((retry_after > 600)) && retry_after=600
+          ((retry_after < 5)) && retry_after=5
+          printf 'announce: HTTP %s (attempt %s/%s) — retrying in %ss\n' \
+            "$status" "$attempt" "$max_attempts" "$retry_after" >&2
+          sleep "$retry_after"
+          continue
+        fi
+        ;;
+    esac
+    break
+  done
+  cat "$body_file" >&2
+  fail "announce failed with HTTP $status after $attempt attempt(s)"
 }
 
 verify_release() {
@@ -165,4 +199,6 @@ main() {
   announce
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi
