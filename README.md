@@ -9,6 +9,9 @@ Claude Code tools for builders. Add the marketplace over HTTPS once, then instal
 /plugin install wsl-cdp@hov
 /plugin install skill-tuner@hov
 /plugin install memory-dream@hov
+/plugin install design-rails@hov
+/plugin install harness-vet@hov
+/plugin install rent-check@hov
 ```
 
 Third-party marketplace updates are off by default. Open `/plugin`, select **Marketplaces**, choose `hov`, and select **Enable auto-update**. Updates are applied at the start of a Claude Code session.
@@ -44,6 +47,18 @@ Tell whether a change to an agent-consumed document actually worked. `/skill-tun
 ## memory-dream
 
 The sleep cycle for Claude Code's auto-memory. `/memory-dream:dream` runs an operator-gated consolidation pass: deterministic triage finds superseded, stale, and oversized notes, a zero-tool subagent drafts the fixes it cannot apply, and you approve each change by hand before anything is written. `/memory-dream:eval` measures whether recall actually improved. It never merges, deletes, or compresses a note on its own.
+
+## design-rails
+
+Guardrails that keep AI agents on your design system. `design-rails` posture-checks whether a real, agent-wired, CI-enforced design system exists, derives a DESIGN.md from the code you already ship, puts open taste decisions on visual pages for you to pick, and ratchets drift budgets that only move down. It also measures what code can prove: touch-target sizes, motion timing, and type-scale hierarchy. Read-only on application source.
+
+## harness-vet
+
+Vet a third-party Claude Code skill before you install it. `/harness-vet` reads the skill the way an adversary would: instruction-channel hygiene, self-update paths, credential reach, and the gap between what the README claims and what the code does.
+
+## rent-check
+
+Your always-on context has to pay rent. `/rent-check` audits what CLAUDE.md and always-on skills actually cost per prompt, measures which rules earn their tokens from real transcripts, and proposes demotions for the ones that do not.
 
 ## License
 
