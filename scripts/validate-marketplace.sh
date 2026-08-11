@@ -196,7 +196,7 @@ remote_for_url() {
 
 validate_remote_plugin() {
   local name="$1" url="$2" sha="$3" metadata_version="$4" metadata_tag="$5"
-  local remote repo manifest_json manifest_name manifest_version resolved_tag version_file release_workflow
+  local remote repo manifest_json manifest_name manifest_version resolved_tag version_file release_workflow release_workflow_json
   remote="$(remote_for_url "$url")"
   repo="$(mktemp -d)"
   git -C "$repo" init -q
@@ -227,12 +227,17 @@ validate_remote_plugin() {
   fi
   version_file="$(git -C "$repo" show refs/announce/default:VERSION 2>/dev/null)" || { rm -rf "$repo"; fail "plugin $name default branch has no root VERSION required by the announce train"; }
   version_file="$(tr -d '[:space:]' <<<"$version_file")"
+  is_semver "$version_file" || { rm -rf "$repo"; fail "plugin $name default-branch VERSION is not semver"; }
   manifest_json="$(git -C "$repo" show refs/announce/default:.claude-plugin/plugin.json 2>/dev/null)" || { rm -rf "$repo"; fail "plugin $name default branch has no plugin manifest"; }
+  jq -e 'type == "object" and (.version | type == "string" and length > 0)' <<<"$manifest_json" >/dev/null || { rm -rf "$repo"; fail "plugin $name default-branch manifest has an invalid version"; }
   manifest_version="$(jq -r '.version' <<<"$manifest_json")"
+  is_semver "$manifest_version" || { rm -rf "$repo"; fail "plugin $name default-branch manifest version is not semver"; }
   [[ "$version_file" == "$manifest_version" ]] || { rm -rf "$repo"; fail "plugin $name default-branch VERSION $version_file differs from manifest $manifest_version"; }
   release_workflow="$(git -C "$repo" show refs/announce/default:.github/workflows/release-train.yml 2>/dev/null)" || { rm -rf "$repo"; fail "plugin $name default branch has no release-train.yml"; }
-  grep -Fq "hov-tool-drop-announce.yml@$ANNOUNCE_WORKFLOW_PIN" <<<"$release_workflow" || { rm -rf "$repo"; fail "plugin $name release train does not pin the blessed announce workflow $ANNOUNCE_WORKFLOW_PIN"; }
-  grep -Eq '^[[:space:]]*id-token:[[:space:]]*write[[:space:]]*$' <<<"$release_workflow" || { rm -rf "$repo"; fail "plugin $name release train lacks id-token: write for OIDC"; }
+  release_workflow_json="$(yq -o=json '.' <<<"$release_workflow")" || { rm -rf "$repo"; fail "plugin $name release train is not valid YAML"; }
+  jq -e '.on.release.types | type == "array" and sort == ["edited", "published"]' <<<"$release_workflow_json" >/dev/null || { rm -rf "$repo"; fail "plugin $name release train must handle published and edited releases"; }
+  jq -e --arg uses "StartupBros-com/hov-marketplace/.github/workflows/hov-tool-drop-announce.yml@$ANNOUNCE_WORKFLOW_PIN" '.jobs.announce.uses == $uses' <<<"$release_workflow_json" >/dev/null || { rm -rf "$repo"; fail "plugin $name release train does not pin the blessed announce workflow $ANNOUNCE_WORKFLOW_PIN"; }
+  jq -e '((.jobs.announce.permissions // .permissions) | type) == "object" and ((.jobs.announce.permissions // .permissions) == {"contents": "read", "id-token": "write"})' <<<"$release_workflow_json" >/dev/null || { rm -rf "$repo"; fail "plugin $name announce job must have only contents: read and id-token: write"; }
   ! grep -Fq 'TOOL_RELEASE_ANNOUNCE_SECRET' <<<"$release_workflow" || { rm -rf "$repo"; fail "plugin $name release train still uses the static announce secret"; }
 
   if [[ -n "$metadata_tag" ]]; then
@@ -260,6 +265,7 @@ validate_full() {
 
 [[ "$MODE" == syntax || "$MODE" == full ]] || fail "usage: $0 [syntax|full]"
 require_command jq
+require_command yq
 require_command git
 [[ -f "$MANIFEST" ]] || fail "marketplace manifest not found: $MANIFEST"
 jq -e . "$MANIFEST" >/dev/null 2>&1 || fail "marketplace manifest is malformed JSON"
