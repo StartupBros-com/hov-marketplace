@@ -158,7 +158,9 @@ validate_monotonicity() {
 
   while IFS=$'\t' read -r name current_id base_id current_version base_version current_sha base_sha current_tag base_tag current_url base_url; do
     [[ -n "$current_id" ]] || fail "plugin $name removed release metadata present at $BASE_REF"
-    is_uint "$current_id" && is_uint "$base_id" || fail "plugin $name has non-numeric release metadata"
+    if ! is_uint "$current_id" || ! is_uint "$base_id"; then
+      fail "plugin $name has non-numeric release metadata"
+    fi
     (( current_id >= base_id )) || fail "plugin $name releaseId rolled back from $base_id to $current_id"
     if (( current_id == base_id )); then
       [[ "$current_version|$current_sha|$current_tag|$current_url" == "$base_version|$base_sha|$base_tag|$base_url" ]] || fail "plugin $name changed immutable metadata for releaseId $current_id"
@@ -197,21 +199,20 @@ validate_remote_plugin() {
   remote="$(remote_for_url "$url")"
   repo="$(mktemp -d)"
   git -C "$repo" init -q
-  if ! git -C "$repo" fetch -q --depth=1 "$remote" "$sha"; then
+  if ! git -C "$repo" fetch -q --depth=1 --no-write-fetch-head "$remote" "$sha"; then
     rm -rf "$repo"
     fail "plugin $name pinned commit is not reachable from $url"
   fi
-  git -C "$repo" cat-file -e FETCH_HEAD^{commit} 2>/dev/null || { rm -rf "$repo"; fail "plugin $name pin is not a commit"; }
-  [[ "$(git -C "$repo" rev-parse FETCH_HEAD)" == "$sha" ]] || { rm -rf "$repo"; fail "plugin $name fetched commit does not match its pin"; }
+  git -C "$repo" cat-file -e "$sha^{commit}" 2>/dev/null || { rm -rf "$repo"; fail "plugin $name pin is not a commit"; }
 
-  manifest_json="$(git -C "$repo" show FETCH_HEAD:.claude-plugin/plugin.json 2>/dev/null)" || { rm -rf "$repo"; fail "plugin $name pin has no .claude-plugin/plugin.json"; }
+  manifest_json="$(git -C "$repo" show "$sha:.claude-plugin/plugin.json" 2>/dev/null)" || { rm -rf "$repo"; fail "plugin $name pin has no .claude-plugin/plugin.json"; }
   jq -e 'type == "object" and (.name | type == "string" and length > 0) and (.version | type == "string" and length > 0)' <<<"$manifest_json" >/dev/null || { rm -rf "$repo"; fail "plugin $name pinned manifest has an invalid shape"; }
   manifest_name="$(jq -r '.name' <<<"$manifest_json")"
   manifest_version="$(jq -r '.version' <<<"$manifest_json")"
   [[ "$manifest_name" == "$name" ]] || { rm -rf "$repo"; fail "plugin $name pinned manifest name is $manifest_name"; }
   is_semver "$manifest_version" || { rm -rf "$repo"; fail "plugin $name pinned manifest version is not semver"; }
   [[ -z "$metadata_version" || "$manifest_version" == "$metadata_version" ]] || { rm -rf "$repo"; fail "plugin $name marketplace and pinned manifest versions differ"; }
-  git -C "$repo" cat-file -e "FETCH_HEAD:skills/$name/SKILL.md" 2>/dev/null || { rm -rf "$repo"; fail "plugin $name pin is missing skills/$name/SKILL.md"; }
+  git -C "$repo" cat-file -e "$sha:skills/$name/SKILL.md" 2>/dev/null || { rm -rf "$repo"; fail "plugin $name pin is missing skills/$name/SKILL.md"; }
 
   if [[ -n "$metadata_tag" ]]; then
     resolved_tag="$(git ls-remote "$remote" "refs/tags/$metadata_tag^{}" | jq -Rrs 'split("\n") | map(select(length > 0) | split("\t")[0]) | first // empty')"
@@ -224,7 +225,7 @@ validate_remote_plugin() {
     IFS=',' read -r -a paths <<<"$EXPECTED_PAYLOAD_PATHS"
     for path in "${paths[@]}"; do
       [[ -n "$path" && "$path" != /* && "$path" != *..* ]] || { rm -rf "$repo"; fail "invalid expected payload path: $path"; }
-      git -C "$repo" cat-file -e "FETCH_HEAD:$path" 2>/dev/null || { rm -rf "$repo"; fail "plugin $name pin is missing expected payload $path"; }
+      git -C "$repo" cat-file -e "$sha:$path" 2>/dev/null || { rm -rf "$repo"; fail "plugin $name pin is missing expected payload $path"; }
     done
   fi
   rm -rf "$repo"
