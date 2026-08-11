@@ -172,6 +172,38 @@ printf '\n# TOOL_RELEASE_ANNOUNCE_SECRET must never return\n' >>"$TMP/token-eate
 publish_fixture_commit 'static announce secret'
 validate_default_branch_failure "static announce secret is forbidden"
 
+# --- announce-workflow pin: verified structurally, not against one constant ---
+# A frozen SHA allowlist rejected the CORRECT state the moment the shared
+# workflow advanced (#34 re-pinned six of eight repos). The pin must be a real
+# marketplace commit that carries the announce workflow; anything else fails.
+
+restore_valid_token_fixture
+yq -i '.jobs.announce.uses = "StartupBros-com/hov-marketplace/.github/workflows/hov-tool-drop-announce.yml@main"' "$TMP/token-eater/.github/workflows/release-train.yml"
+publish_fixture_commit 'branch ref instead of a commit pin'
+validate_default_branch_failure "a branch ref is never an acceptable announce pin"
+
+restore_valid_token_fixture
+yq -i '.jobs.announce.uses = "StartupBros-com/hov-marketplace/.github/workflows/hov-tool-drop-announce.yml@v1.0.0"' "$TMP/token-eater/.github/workflows/release-train.yml"
+publish_fixture_commit 'tag ref instead of a commit pin'
+validate_default_branch_failure "a tag ref is never an acceptable announce pin"
+
+restore_valid_token_fixture
+yq -i '.jobs.announce.uses = "StartupBros-com/hov-marketplace/.github/workflows/hov-tool-drop-announce.yml@0123456789abcdef0123456789abcdef01234567"' "$TMP/token-eater/.github/workflows/release-train.yml"
+publish_fixture_commit 'well-formed but nonexistent commit'
+validate_default_branch_failure "a SHA that is not a marketplace commit is rejected"
+
+# The live successor pin (#34) must pass exactly like the original: this is the
+# regression that a frozen constant caused.
+restore_valid_token_fixture
+yq -i '.jobs.announce.uses = "StartupBros-com/hov-marketplace/.github/workflows/hov-tool-drop-announce.yml@08f7d22f3a5b59b1658ab2e96a20d0d3c352869c"' "$TMP/token-eater/.github/workflows/release-train.yml"
+publish_fixture_commit 'advanced announce pin'
+write_unreleased_manifest "$TOKEN_SHA"
+expect_pass "an advanced-but-real announce pin is blessed" validate full
+
+# An exact pin can still be demanded explicitly (release-time verification).
+write_unreleased_manifest "$TOKEN_SHA"
+expect_fail "explicit ANNOUNCE_WORKFLOW_PIN still enforces one exact SHA" env ANNOUNCE_WORKFLOW_PIN=c981b872ebf650805200ad72c8b7142232f8b3f6 MARKETPLACE_TEST_REMOTE_ROOT="$REMOTE_ROOT" ALLOW_LOCAL_FILE_REMOTES=1 bash -c 'cd "$1" && "$2" full' _ "$WORK" "$VALIDATOR"
+
 restore_valid_token_fixture
 publish_fixture_commit 'restore valid announcement contract'
 write_unreleased_manifest "$TOKEN_SHA"

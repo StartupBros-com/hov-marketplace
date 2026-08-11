@@ -12,7 +12,29 @@ EXPECTED_SHA="${EXPECTED_SHA:-}"
 EXPECTED_PAYLOAD_PATHS="${EXPECTED_PAYLOAD_PATHS:-}"
 ALLOW_LOCAL_FILE_REMOTES="${ALLOW_LOCAL_FILE_REMOTES:-0}"
 MARKETPLACE_TEST_REMOTE_ROOT="${MARKETPLACE_TEST_REMOTE_ROOT:-}"
-ANNOUNCE_WORKFLOW_PIN="${ANNOUNCE_WORKFLOW_PIN:-c981b872ebf650805200ad72c8b7142232f8b3f6}"
+# Optional exact-pin override. Unset (the norm) means the pin is verified
+# STRUCTURALLY: any 40-hex commit of THIS repo that actually carries the
+# announce workflow is blessed. A frozen constant was wrong — when the shared
+# workflow legitimately advanced (#34), six of eight repos re-pinned to the
+# new SHA and the gate rejected the correct state while passing the two
+# stragglers. A policy that fails on compliance teaches people to bypass it.
+ANNOUNCE_WORKFLOW_PIN="${ANNOUNCE_WORKFLOW_PIN:-}"
+# Where to resolve announce-workflow pins. The manifest under validation can
+# live anywhere (fixtures use a temp repo), but pins are always commits of the
+# marketplace repo this script ships in.
+MARKETPLACE_REPO_DIR="${MARKETPLACE_REPO_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+
+# A pin is blessed when it is a real commit in the marketplace repo's history
+# AND that commit carries the announce workflow. Both halves matter: ancestry
+# alone would accept any old commit from before the workflow existed, and file
+# presence alone would accept a commit from a fork.
+announce_pin_is_blessed() {
+  local pin="$1"
+  [[ "$pin" =~ ^[0-9a-f]{40}$ ]] || return 1
+  git -C "$MARKETPLACE_REPO_DIR" cat-file -e "$pin^{commit}" 2>/dev/null || return 1
+  git -C "$MARKETPLACE_REPO_DIR" merge-base --is-ancestor "$pin" HEAD 2>/dev/null || return 1
+  git -C "$MARKETPLACE_REPO_DIR" cat-file -e "$pin:.github/workflows/hov-tool-drop-announce.yml" 2>/dev/null
+}
 
 fail() {
   printf 'error: %s\n' "$*" >&2
@@ -196,7 +218,7 @@ remote_for_url() {
 
 validate_remote_plugin() {
   local name="$1" url="$2" sha="$3" metadata_version="$4" metadata_tag="$5"
-  local remote repo manifest_json manifest_name manifest_version resolved_tag version_file release_workflow release_workflow_json
+  local remote repo manifest_json manifest_name manifest_version resolved_tag version_file release_workflow release_workflow_json announce_uses announce_pin
   remote="$(remote_for_url "$url")"
   repo="$(mktemp -d)"
   git -C "$repo" init -q
@@ -236,7 +258,14 @@ validate_remote_plugin() {
   release_workflow="$(git -C "$repo" show refs/announce/default:.github/workflows/release-train.yml 2>/dev/null)" || { rm -rf "$repo"; fail "plugin $name default branch has no release-train.yml"; }
   release_workflow_json="$(yq -o=json '.' <<<"$release_workflow")" || { rm -rf "$repo"; fail "plugin $name release train is not valid YAML"; }
   jq -e '.on.release.types | type == "array" and sort == ["edited", "published"]' <<<"$release_workflow_json" >/dev/null || { rm -rf "$repo"; fail "plugin $name release train must handle published and edited releases"; }
-  jq -e --arg uses "StartupBros-com/hov-marketplace/.github/workflows/hov-tool-drop-announce.yml@$ANNOUNCE_WORKFLOW_PIN" '.jobs.announce.uses == $uses' <<<"$release_workflow_json" >/dev/null || { rm -rf "$repo"; fail "plugin $name release train does not pin the blessed announce workflow $ANNOUNCE_WORKFLOW_PIN"; }
+  announce_uses="$(jq -r '.jobs.announce.uses // ""' <<<"$release_workflow_json")"
+  announce_pin="${announce_uses##*@}"
+  [[ "$announce_uses" == "StartupBros-com/hov-marketplace/.github/workflows/hov-tool-drop-announce.yml@"* ]] || { rm -rf "$repo"; fail "plugin $name announce job does not call the shared hov announce workflow"; }
+  if [[ -n "$ANNOUNCE_WORKFLOW_PIN" ]]; then
+    [[ "$announce_pin" == "$ANNOUNCE_WORKFLOW_PIN" ]] || { rm -rf "$repo"; fail "plugin $name pins announce workflow $announce_pin, expected $ANNOUNCE_WORKFLOW_PIN"; }
+  else
+    announce_pin_is_blessed "$announce_pin" || { rm -rf "$repo"; fail "plugin $name pins announce workflow $announce_pin, which is not a marketplace commit carrying that workflow (a tag or branch ref is never acceptable)"; }
+  fi
   jq -e '((.jobs.announce.permissions // .permissions) | type) == "object" and ((.jobs.announce.permissions // .permissions) == {"contents": "read", "id-token": "write"})' <<<"$release_workflow_json" >/dev/null || { rm -rf "$repo"; fail "plugin $name announce job must have only contents: read and id-token: write"; }
   ! grep -Fq 'TOOL_RELEASE_ANNOUNCE_SECRET' <<<"$release_workflow" || { rm -rf "$repo"; fail "plugin $name release train still uses the static announce secret"; }
 
