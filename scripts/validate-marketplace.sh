@@ -213,7 +213,7 @@ validate_remote_plugin() {
   [[ "$manifest_name" == "$name" ]] || { rm -rf "$repo"; fail "plugin $name pinned manifest name is $manifest_name"; }
   is_semver "$manifest_version" || { rm -rf "$repo"; fail "plugin $name pinned manifest version is not semver"; }
   [[ -z "$metadata_version" || "$manifest_version" == "$metadata_version" ]] || { rm -rf "$repo"; fail "plugin $name marketplace and pinned manifest versions differ"; }
-  git -C "$repo" cat-file -e "FETCH_HEAD:skills/$name/SKILL.md" 2>/dev/null || { rm -rf "$repo"; fail "plugin $name pin is missing skills/$name/SKILL.md"; }
+  git -C "$repo" cat-file -e "refs/announce/pinned:skills/$name/SKILL.md" 2>/dev/null || { rm -rf "$repo"; fail "plugin $name pin is missing skills/$name/SKILL.md"; }
 
   # Announcement contract is checked on the CURRENT DEFAULT BRANCH — the tree
   # the next tag will inherit. Historical release pins may legitimately predate
@@ -234,11 +234,6 @@ validate_remote_plugin() {
   grep -Eq '^[[:space:]]*id-token:[[:space:]]*write[[:space:]]*$' <<<"$release_workflow" || { rm -rf "$repo"; fail "plugin $name release train lacks id-token: write for OIDC"; }
   ! grep -Fq 'TOOL_RELEASE_ANNOUNCE_SECRET' <<<"$release_workflow" || { rm -rf "$repo"; fail "plugin $name release train still uses the static announce secret"; }
 
-  # Restore the release pin for payload and tag checks below.
-  git -C "$repo" update-ref FETCH_HEAD refs/announce/pinned
-  manifest_json="$(git -C "$repo" show FETCH_HEAD:.claude-plugin/plugin.json)"
-  manifest_version="$(jq -r '.version' <<<"$manifest_json")"
-
   if [[ -n "$metadata_tag" ]]; then
     resolved_tag="$(git ls-remote "$remote" "refs/tags/$metadata_tag^{}" | jq -Rrs 'split("\n") | map(select(length > 0) | split("\t")[0]) | first // empty')"
     [[ -n "$resolved_tag" ]] || resolved_tag="$(git ls-remote "$remote" "refs/tags/$metadata_tag" | jq -Rrs 'split("\n") | map(select(length > 0) | split("\t")[0]) | first // empty')"
@@ -250,7 +245,7 @@ validate_remote_plugin() {
     IFS=',' read -r -a paths <<<"$EXPECTED_PAYLOAD_PATHS"
     for path in "${paths[@]}"; do
       [[ -n "$path" && "$path" != /* && "$path" != *..* ]] || { rm -rf "$repo"; fail "invalid expected payload path: $path"; }
-      git -C "$repo" cat-file -e "FETCH_HEAD:$path" 2>/dev/null || { rm -rf "$repo"; fail "plugin $name pin is missing expected payload $path"; }
+      git -C "$repo" cat-file -e "refs/announce/pinned:$path" 2>/dev/null || { rm -rf "$repo"; fail "plugin $name pin is missing expected payload $path"; }
     done
   fi
   rm -rf "$repo"
