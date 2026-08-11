@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Focused regressions for announce()'s bounded canonical Retry-After behavior.
 # Stubs token mint, HTTP send, and sleep; no network or real waiting occurs.
-# shellcheck disable=SC2329
+# shellcheck disable=SC2317,SC2329
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
