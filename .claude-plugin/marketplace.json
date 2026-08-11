@@ -147,13 +147,13 @@
       "source": {
         "source": "url",
         "url": "https://github.com/StartupBros-com/harness-vet.git",
-        "sha": "ae82023d086db457deb7b7f7d1acfcbff5b8a8c0"
+        "sha": "e3ab6aafcc6311fcee2e69b40cc3203f2ecf9039"
       },
       "description": "Adoption gate for external agent tooling. /harness-vet deep-dives a skill, plugin, MCP server, repo, or paper against YOUR harness: install-state and overlap checked, claims verified by running them, context cost priced, per-component ADOPT/ADAPT/EXTRACT/SKIP/REJECT verdicts with re-eval triggers — and an audit dividend that often outvalues the verdict.",
       "metadata": {
-        "version": "0.1.1",
-        "releaseId": 368343658,
-        "releaseTag": "v0.1.1"
+        "version": "0.1.2",
+        "releaseId": 368391345,
+        "releaseTag": "v0.1.2"
       },
       "card": {
         "rows": [
