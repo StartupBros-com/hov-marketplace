@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2016
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -37,16 +38,8 @@ expect_fail() {
   fi
 }
 
-make_plugin() {
-  local name="$1" version="$2" tag="$3"
-  local repo="$TMP/$name"
-  git init -q "$repo"
-  git -C "$repo" config user.name Fixture
-  git -C "$repo" config user.email fixture@example.com
-  mkdir -p "$repo/.claude-plugin" "$repo/skills/$name" "$repo/.github/workflows"
-  jq -n --arg name "$name" --arg version "$version" '{name: $name, version: $version}' >"$repo/.claude-plugin/plugin.json"
-  printf '%s\n' "$version" >"$repo/VERSION"
-  printf '# fixture\n' >"$repo/skills/$name/SKILL.md"
+write_valid_release_workflow() {
+  local repo="$1"
   cat >"$repo/.github/workflows/release-train.yml" <<'EOF'
 name: Release train
 on:
@@ -59,6 +52,19 @@ jobs:
   announce:
     uses: StartupBros-com/hov-marketplace/.github/workflows/hov-tool-drop-announce.yml@c981b872ebf650805200ad72c8b7142232f8b3f6
 EOF
+}
+
+make_plugin() {
+  local name="$1" version="$2" tag="$3"
+  local repo="$TMP/$name"
+  git init -q "$repo"
+  git -C "$repo" config user.name Fixture
+  git -C "$repo" config user.email fixture@example.com
+  mkdir -p "$repo/.claude-plugin" "$repo/skills/$name" "$repo/.github/workflows"
+  jq -n --arg name "$name" --arg version "$version" '{name: $name, version: $version}' >"$repo/.claude-plugin/plugin.json"
+  printf '%s\n' "$version" >"$repo/VERSION"
+  printf '# fixture\n' >"$repo/skills/$name/SKILL.md"
+  write_valid_release_workflow "$repo"
   git -C "$repo" add .claude-plugin/plugin.json "skills/$name/SKILL.md" VERSION .github/workflows/release-train.yml
   git -C "$repo" commit -qm fixture
   git -C "$repo" branch -M main
@@ -106,35 +112,70 @@ publish_fixture_commit() {
   git -C "$TMP/token-eater" add -A
   git -C "$TMP/token-eater" commit -qm "$1"
   git -C "$TMP/token-eater" push -q "$REMOTE_ROOT/StartupBros-com/token-eater.git" HEAD:main
-  git -C "$TMP/token-eater" rev-parse HEAD
+}
+restore_valid_token_fixture() {
+  jq -n '{name: "token-eater", version: "1.2.3"}' >"$TMP/token-eater/.claude-plugin/plugin.json"
+  printf '1.2.3\n' >"$TMP/token-eater/VERSION"
+  write_valid_release_workflow "$TMP/token-eater"
+}
+validate_default_branch_failure() {
+  write_unreleased_manifest "$TOKEN_SHA"
+  expect_fail "$1" validate full
 }
 
 git -C "$TMP/token-eater" rm -q VERSION
-MISSING_VERSION_SHA="$(publish_fixture_commit 'missing version')"
-write_unreleased_manifest "$MISSING_VERSION_SHA"
-expect_fail "pinned plugin without VERSION rejected before release" validate full
+publish_fixture_commit 'missing version'
+validate_default_branch_failure "default branch without VERSION rejected before release"
 
+restore_valid_token_fixture
 printf '9.9.9\n' >"$TMP/token-eater/VERSION"
-MISMATCH_VERSION_SHA="$(publish_fixture_commit 'mismatched version')"
-write_unreleased_manifest "$MISMATCH_VERSION_SHA"
-expect_fail "VERSION must match pinned plugin manifest" validate full
+publish_fixture_commit 'mismatched version'
+validate_default_branch_failure "VERSION must match default-branch plugin manifest"
 
+restore_valid_token_fixture
+jq '.version = null' "$TMP/token-eater/.claude-plugin/plugin.json" >"$TMP/null-version.json"
+mv "$TMP/null-version.json" "$TMP/token-eater/.claude-plugin/plugin.json"
 printf '1.2.3\n' >"$TMP/token-eater/VERSION"
-sed -i 's/c981b872ebf650805200ad72c8b7142232f8b3f6/0000000000000000000000000000000000000000/' "$TMP/token-eater/.github/workflows/release-train.yml"
-BAD_PIN_SHA="$(publish_fixture_commit 'wrong announce pin')"
-write_unreleased_manifest "$BAD_PIN_SHA"
-expect_fail "release train must pin blessed announce workflow" validate full
+publish_fixture_commit 'null manifest version'
+validate_default_branch_failure "default-branch manifest version must be a semver string"
 
-sed -i 's/0000000000000000000000000000000000000000/c981b872ebf650805200ad72c8b7142232f8b3f6/; /id-token: write/d' "$TMP/token-eater/.github/workflows/release-train.yml"
-NO_OIDC_SHA="$(publish_fixture_commit 'missing oidc permission')"
-write_unreleased_manifest "$NO_OIDC_SHA"
-expect_fail "release train requires OIDC permission" validate full
+restore_valid_token_fixture
+cat >"$TMP/token-eater/.github/workflows/release-train.yml" <<'EOF'
+name: Release train
+on:
+  release:
+    types: [published, edited]
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  decoy:
+    uses: StartupBros-com/hov-marketplace/.github/workflows/hov-tool-drop-announce.yml@c981b872ebf650805200ad72c8b7142232f8b3f6
+  announce:
+    uses: attacker/other/.github/workflows/hov-tool-drop-announce.yml@c981b872ebf650805200ad72c8b7142232f8b3f6
+EOF
+publish_fixture_commit 'blessed pin in unrelated job'
+validate_default_branch_failure "blessed pin in an unrelated job cannot authorize announce"
 
-sed -i '/contents: read/a\  id-token: write' "$TMP/token-eater/.github/workflows/release-train.yml"
+restore_valid_token_fixture
+yq -i '.on.release.types = ["published"]' "$TMP/token-eater/.github/workflows/release-train.yml"
+publish_fixture_commit 'missing edited trigger'
+validate_default_branch_failure "release train requires published and edited triggers"
+
+restore_valid_token_fixture
+yq -i '.jobs.announce.permissions = {"contents": "read"}' "$TMP/token-eater/.github/workflows/release-train.yml"
+publish_fixture_commit 'announce job shadows oidc permission'
+validate_default_branch_failure "announce job requires effective OIDC permission"
+
+restore_valid_token_fixture
 printf '\n# TOOL_RELEASE_ANNOUNCE_SECRET must never return\n' >>"$TMP/token-eater/.github/workflows/release-train.yml"
-STATIC_SECRET_SHA="$(publish_fixture_commit 'static announce secret')"
-write_unreleased_manifest "$STATIC_SECRET_SHA"
-expect_fail "static announce secret is forbidden" validate full
+publish_fixture_commit 'static announce secret'
+validate_default_branch_failure "static announce secret is forbidden"
+
+restore_valid_token_fixture
+publish_fixture_commit 'restore valid announcement contract'
+write_unreleased_manifest "$TOKEN_SHA"
+expect_pass "restored default branch announcement contract" validate full
 
 printf '{broken\n' >"$WORK/.claude-plugin/marketplace.json"
 expect_fail "malformed JSON" validate syntax

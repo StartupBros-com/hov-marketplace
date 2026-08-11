@@ -61,9 +61,14 @@ rather than leaving the section out.
 - **429 "GitHub release verification is rate limited"** — the service holds a
   global 600-second verification gate per channel
   (`OIDC_PREFLIGHT_LEASE_SECONDS`); any two plugin releases inside ~10
-  minutes collide. Space releases, or let the announce script's retry (added
-  with this doc; honors `Retry-After`, clamped 5-600s, 5 attempts) outlast
-  the window.
-- **409** — a processing lease or residual cooldown is held
-  (`Retry-After: 2` accompanies it); the retry handles this too.
-- Non-retryable statuses (400/401/403) fail immediately by design.
+  minutes collide. Space releases, or let the announce script honor the
+  service's canonical `Retry-After` value.
+- **409** — a processing lease or residual cooldown is held; a canonical
+  `Retry-After` authorizes the same bounded retry path.
+- The announce helper allows exactly eight attempts. Each attempt mints a new
+  body-bound OIDC token, preserves the exact request bytes, and sleeps for the
+  server delay plus a two-second lease cushion and deterministic 0–3 second
+  jitter. There is no ninth mint, POST, or sleep.
+- Only 409 and 429 retry. Missing, duplicate, folded, date-form, zero,
+  leading-zero, or out-of-range `Retry-After` values fail closed. Transport
+  failures, redirects, 5xx responses, and other statuses do not retry.
