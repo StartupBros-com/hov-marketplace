@@ -27,7 +27,9 @@ permissions: {}
 
 jobs:
   announce:
-    if: github.event.release.draft == false && github.event.release.prerelease == false
+    concurrency:
+      group: hov-tool-drop-announce-${{ github.repository }}-${{ github.event.release.id }}
+      cancel-in-progress: true
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -70,11 +72,14 @@ jobs:
           path: marketplace-data
           persist-credentials: false
 
-      - name: Resolve latest stable release
+      - name: Resolve current and latest stable releases
         id: stable
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ github.event.release.id }}
+          CURRENT_RELEASE_FILE: ${{ runner.temp }}/hov-tool-drop-current-release.json
         run: |
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" >"$CURRENT_RELEASE_FILE"
           latest_id="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .id)"
           test -n "$latest_id"
           echo "id=$latest_id" >> "$GITHUB_OUTPUT"
@@ -85,9 +90,7 @@ jobs:
           REPOSITORY: ${{ github.event.repository.name }}
           RELEASE_ID: ${{ github.event.release.id }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
-          RELEASE_NOTES: ${{ github.event.release.body }}
-          RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
-          RELEASE_DRAFT: ${{ github.event.release.draft }}
+          CURRENT_RELEASE_FILE: ${{ runner.temp }}/hov-tool-drop-current-release.json
           LATEST_STABLE_ID: ${{ steps.stable.outputs.id }}
           SOURCE_ROOT: ${{ github.workspace }}
           MARKETPLACE_MANIFEST: ${{ github.workspace }}/marketplace-data/.claude-plugin/marketplace.json

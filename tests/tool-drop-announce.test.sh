@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Static mutation needles intentionally quote shell and Actions expressions.
-# shellcheck disable=SC2016
+# Static mutation needles quote shell/Actions expressions, and the fake HTTP
+# plan is intentionally addressed through dynamically named variables.
+# shellcheck disable=SC2016,SC2034
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -33,10 +34,12 @@ done
 check_contract() {
   local workflow="$1" helper="$2"
   local input_count secret_count fixed_count disable_count
-  local release_index ancestry_index trusted_index manifest_index announce_index
+  local release_index ancestry_index trusted_index manifest_index resolve_index announce_index
   local release_ref trusted_repository trusted_ref trusted_path trusted_credentials
   local manifest_repository manifest_ref manifest_path manifest_credentials
-  local ancestry_run expected_ancestry announce_run expected_announce manifest_env
+  local ancestry_run expected_ancestry resolve_run expected_resolve announce_run expected_announce manifest_env
+  local resolve_env_count announce_env_count current_release_file
+  local concurrency_group concurrency_cancel concurrency_cancel_tag
   local send_block announce_block header_count mask_line send_line
   local retry_loop_line mint_line retry_loop_end_line
 
@@ -44,6 +47,14 @@ check_contract() {
   secret_count="$(yq -r '.on.workflow_call.secrets // {} | length' "$workflow")" || return 1
   [[ "$input_count" == 0 && "$secret_count" == 0 ]] || return 1
   ! grep -Eq 'announce-url|ANNOUNCE_URL|ANNOUNCE_SECRET|OIDC_TOKEN|x-tool-release-announce-secret' "$workflow" "$helper" || return 1
+  [[ "$(yq -r 'has("concurrency")' "$workflow")" == false ]] || return 1
+
+  concurrency_group="$(yq -r '.jobs.announce.concurrency.group' "$workflow")" || return 1
+  concurrency_cancel="$(yq -r '.jobs.announce.concurrency.cancel-in-progress' "$workflow")" || return 1
+  concurrency_cancel_tag="$(yq -r '.jobs.announce.concurrency.cancel-in-progress | tag' "$workflow")" || return 1
+  [[ "$concurrency_group" == 'hov-tool-drop-announce-${{ github.repository }}-${{ github.event.release.id }}' ]] || return 1
+  [[ "$concurrency_cancel" == true && "$concurrency_cancel_tag" == '!!bool' ]] || return 1
+  [[ "$(yq -r '.jobs.announce | has("if")' "$workflow")" == false ]] || return 1
 
   fixed_count="$({ grep -Fo "$FIXED_ENDPOINT" "$helper" || true; } | wc -l)"
   [[ "$fixed_count" == 1 ]] || return 1
@@ -54,9 +65,10 @@ check_contract() {
   ancestry_index="$(yq -r '.jobs.announce.steps | to_entries | .[] | select(.value.name == "Require release commit on default branch") | .key' "$workflow")" || return 1
   trusted_index="$(yq -r '.jobs.announce.steps | to_entries | .[] | select(.value.name == "Check out trusted workflow helper") | .key' "$workflow")" || return 1
   manifest_index="$(yq -r '.jobs.announce.steps | to_entries | .[] | select(.value.name == "Check out current marketplace manifest") | .key' "$workflow")" || return 1
+  resolve_index="$(yq -r '.jobs.announce.steps | to_entries | .[] | select(.value.name == "Resolve current and latest stable releases") | .key' "$workflow")" || return 1
   announce_index="$(yq -r '.jobs.announce.steps | to_entries | .[] | select(.value.name == "Announce release") | .key' "$workflow")" || return 1
-  [[ "$release_index" =~ ^[0-9]+$ && "$ancestry_index" =~ ^[0-9]+$ && "$trusted_index" =~ ^[0-9]+$ && "$manifest_index" =~ ^[0-9]+$ && "$announce_index" =~ ^[0-9]+$ ]] || return 1
-  ((release_index + 1 == ancestry_index && ancestry_index < trusted_index && trusted_index < manifest_index && manifest_index < announce_index)) || return 1
+  [[ "$release_index" =~ ^[0-9]+$ && "$ancestry_index" =~ ^[0-9]+$ && "$trusted_index" =~ ^[0-9]+$ && "$manifest_index" =~ ^[0-9]+$ && "$resolve_index" =~ ^[0-9]+$ && "$announce_index" =~ ^[0-9]+$ ]] || return 1
+  ((release_index + 1 == ancestry_index && ancestry_index < trusted_index && trusted_index < manifest_index && manifest_index < resolve_index && resolve_index < announce_index)) || return 1
 
   release_ref="$(yq -r '.jobs.announce.steps[] | select(.name == "Check out release commit") | .with.ref' "$workflow")" || return 1
   [[ "$release_ref" == 'refs/tags/${{ github.event.release.tag_name }}' ]] || return 1
@@ -79,12 +91,33 @@ check_contract() {
   [[ "$manifest_repository" == StartupBros-com/hov-marketplace && "$manifest_ref" == main ]] || return 1
   [[ -n "$manifest_path" && "$manifest_path" != "$trusted_path" && "$manifest_credentials" == false ]] || return 1
 
+  current_release_file='${{ runner.temp }}/hov-tool-drop-current-release.json'
+  resolve_env_count="$(yq -r '.jobs.announce.steps[] | select(.name == "Resolve current and latest stable releases") | .env | length' "$workflow")" || return 1
+  [[ "$resolve_env_count" == 3 ]] || return 1
+  [[ "$(yq -r '.jobs.announce.steps[] | select(.name == "Resolve current and latest stable releases") | .env.GH_TOKEN' "$workflow")" == '${{ github.token }}' ]] || return 1
+  [[ "$(yq -r '.jobs.announce.steps[] | select(.name == "Resolve current and latest stable releases") | .env.RELEASE_ID' "$workflow")" == '${{ github.event.release.id }}' ]] || return 1
+  [[ "$(yq -r '.jobs.announce.steps[] | select(.name == "Resolve current and latest stable releases") | .env.CURRENT_RELEASE_FILE' "$workflow")" == "$current_release_file" ]] || return 1
+  resolve_run="$(yq -r '.jobs.announce.steps[] | select(.name == "Resolve current and latest stable releases") | .run' "$workflow")" || return 1
+  expected_resolve=$'gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" >"$CURRENT_RELEASE_FILE"\nlatest_id="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .id)"\ntest -n "$latest_id"\necho "id=$latest_id" >> "$GITHUB_OUTPUT"'
+  [[ "$resolve_run" == "$expected_resolve" && "$resolve_run" != *'${{'* ]] || return 1
+
   announce_run="$(yq -r '.jobs.announce.steps[] | select(.name == "Announce release") | .run' "$workflow")" || return 1
+  [[ "$(yq -r '.jobs.announce.steps[] | select(.name == "Announce release") | has("if")' "$workflow")" == false ]] || return 1
   manifest_env="$(yq -r '.jobs.announce.steps[] | select(.name == "Announce release") | .env.MARKETPLACE_MANIFEST' "$workflow")" || return 1
+  announce_env_count="$(yq -r '.jobs.announce.steps[] | select(.name == "Announce release") | .env | length' "$workflow")" || return 1
   expected_announce=$'source_sha="$(git rev-list -n 1 "refs/tags/$RELEASE_TAG")"\nexport SOURCE_SHA="$source_sha"\n'
   expected_announce+="./$trusted_path/scripts/tool-drop-announce.sh"
   [[ "$announce_run" == "$expected_announce" ]] || return 1
-  [[ "$manifest_env" == *"/$manifest_path/.claude-plugin/marketplace.json" ]] || return 1
+  [[ "$announce_env_count" == 8 ]] || return 1
+  [[ "$(yq -r '.jobs.announce.steps[] | select(.name == "Announce release") | .env.EVENT_ACTION' "$workflow")" == '${{ github.event.action }}' ]] || return 1
+  [[ "$(yq -r '.jobs.announce.steps[] | select(.name == "Announce release") | .env.REPOSITORY' "$workflow")" == '${{ github.event.repository.name }}' ]] || return 1
+  [[ "$(yq -r '.jobs.announce.steps[] | select(.name == "Announce release") | .env.RELEASE_ID' "$workflow")" == '${{ github.event.release.id }}' ]] || return 1
+  [[ "$(yq -r '.jobs.announce.steps[] | select(.name == "Announce release") | .env.RELEASE_TAG' "$workflow")" == '${{ github.event.release.tag_name }}' ]] || return 1
+  [[ "$(yq -r '.jobs.announce.steps[] | select(.name == "Announce release") | .env.CURRENT_RELEASE_FILE' "$workflow")" == "$current_release_file" ]] || return 1
+  [[ "$(yq -r '.jobs.announce.steps[] | select(.name == "Announce release") | .env.LATEST_STABLE_ID' "$workflow")" == '${{ steps.stable.outputs.id }}' ]] || return 1
+  [[ "$(yq -r '.jobs.announce.steps[] | select(.name == "Announce release") | .env.SOURCE_ROOT' "$workflow")" == '${{ github.workspace }}' ]] || return 1
+  [[ "$manifest_env" == '${{ github.workspace }}'"/$manifest_path/.claude-plugin/marketplace.json" ]] || return 1
+  ! grep -Eq 'github\.event\.release\.(body|draft|prerelease)' "$workflow" || return 1
   ! grep -Fq 'ACTIONS_ID_TOKEN_REQUEST_URL' "$workflow" || return 1
 
   grep -Fq 'readonly request_body' "$helper" || return 1
@@ -103,14 +136,35 @@ check_contract() {
   grep -Fq '[[ "$1" =~ ^[1-9][0-9]*$ ]]' "$helper" || return 1
   grep -Fq 'is_positive_uint "$RELEASE_ID" || fail "RELEASE_ID must be a positive canonical decimal integer"' "$helper" || return 1
   grep -Fq 'is_positive_uint "$LATEST_STABLE_ID" || fail "LATEST_STABLE_ID must be a positive canonical decimal integer"' "$helper" || return 1
+  grep -Fq 'require CURRENT_RELEASE_FILE' "$helper" || return 1
+  grep -Fq '((.id | tostring) == $expected_id)' "$helper" || return 1
+  grep -Fq '(.tag_name == $expected_tag)' "$helper" || return 1
+  grep -Fq 'has("body")' "$helper" || return 1
+  grep -Fq '(.body == null or (.body | type == "string"))' "$helper" || return 1
+  grep -Fq '(.draft | type == "boolean")' "$helper" || return 1
+  grep -Fq '(.prerelease | type == "boolean")' "$helper" || return 1
+  grep -Fq 'CURRENT_RELEASE_NOTES="$(jq -jr' "$helper" || return 1
+  grep -Fq 'notes="$(printf '\''%s'\'' "${CURRENT_RELEASE_NOTES:-}" | tr -d '\''\r'\'')"' "$helper" || return 1
+  grep -Fq '[[ "$EVENT_ACTION" == published || "$EVENT_ACTION" == edited ]] || fail "unsupported release action: $EVENT_ACTION"' "$helper" || return 1
+  ! grep -Eq '(^|[[:space:]])(eval|source)[[:space:]].*CURRENT_RELEASE' "$helper" || return 1
   ! grep -Fq -- '--location' "$helper" || return 1
-  ! grep -Eq -- '--retry([ =]|$)' "$helper" || return 1
+  ! grep -Eq -- '(^|[[:blank:]])-L([[:blank:]]|$)' "$helper" || return 1
+  ! grep -Fq -- '--retry' "$helper" || return 1
+  ! grep -Fq -- '--config' "$helper" || return 1
+  ! grep -Eq -- '(^|[[:blank:]])-K([[:blank:]]|$)' "$helper" || return 1
   grep -Fq 'ANNOUNCE_RESPONSE_DIR="$(mktemp -d)"' "$helper" || return 1
   grep -Fq 'trap cleanup_response_dir EXIT' "$helper" || return 1
-  grep -Fq '[[ "$final_status" == 429 ]] || return 1' "$helper" || return 1
+  grep -Fxq 'readonly ANNOUNCE_MAX_ATTEMPTS=8' "$helper" || return 1
+  grep -Fxq 'readonly RETRY_JITTER_MAX_SECONDS=3' "$helper" || return 1
+  grep -Fq '[[ "$expected_status" == 409 || "$expected_status" == 429 ]] || return 1' "$helper" || return 1
+  grep -Fq '[[ "$final_status" == "$expected_status" ]] || return 1' "$helper" || return 1
+  grep -Fq 'if [[ "$http_status" != 409 && "$http_status" != 429 ]]; then' "$helper" || return 1
   grep -Fq '[[ "${values[0]}" =~ ^([1-9]|[1-9][0-9]|[1-5][0-9][0-9]|600)$ ]]' "$helper" || return 1
-  grep -Fq 'retry_after="$(retry_after_seconds "$response_headers")"' "$helper" || return 1
-  grep -Fq 'retry_delay=$((10#$retry_after + RETRY_LEASE_EXPIRY_CUSHION_SECONDS))' "$helper" || return 1
+  grep -Fq 'retry_after="$(retry_after_seconds "$response_headers" "$http_status")"' "$helper" || return 1
+  grep -Fq 'digest="$(sha256_bytes "$jitter_repository:$jitter_release_id:$jitter_attempt")"' "$helper" || return 1
+  grep -Fq '16#${digest:0:8} % (RETRY_JITTER_MAX_SECONDS + 1)' "$helper" || return 1
+  grep -Fq 'retry_jitter="$(retry_jitter_seconds "$REPOSITORY" "$RELEASE_ID" "$attempt")"' "$helper" || return 1
+  grep -Fq 'retry_delay=$((10#$retry_after + RETRY_LEASE_EXPIRY_CUSHION_SECONDS + retry_jitter))' "$helper" || return 1
   grep -Fq 'sleep "$retry_delay"' "$helper" || return 1
   ! grep -Fq 'sleep "$retry_after"' "$helper" || return 1
 
@@ -130,7 +184,7 @@ check_contract() {
   grep -Fq 'curl --disable --fail-with-body --silent --show-error --get' "$helper" || return 1
 
   announce_block="$(sed -n '/^announce() {/,/^}/p' "$helper")"
-  retry_loop_line="$({ grep -nFx '  for attempt in 1 2; do' <<<"$announce_block" || true; } | cut -d: -f1)"
+  retry_loop_line="$({ grep -nFx '  for ((attempt = 1; attempt <= ANNOUNCE_MAX_ATTEMPTS; attempt += 1)); do' <<<"$announce_block" || true; } | cut -d: -f1)"
   mint_line="$({ grep -nF 'oidc_token="$(mint_oidc_token "$audience")"' <<<"$announce_block" || true; } | cut -d: -f1)"
   retry_loop_end_line="$({ grep -nFx '  done' <<<"$announce_block" || true; } | cut -d: -f1)"
   [[ "$retry_loop_line" =~ ^[0-9]+$ && "$mint_line" =~ ^[0-9]+$ && "$retry_loop_end_line" =~ ^[0-9]+$ ]] || return 1
@@ -172,6 +226,55 @@ mutant="$TMP/workflow-input.yml"
 replace_once "$WORKFLOW" "$mutant" $'  workflow_call:\n' $'  workflow_call:\n    inputs:\n      announce-url:\n        type: string\n        required: false\n'
 expect_contract_reject "caller URL input" "$mutant" "$HELPER"
 
+mutant="$TMP/workflow-no-concurrency-cancel.yml"
+replace_once "$WORKFLOW" "$mutant" $'      cancel-in-progress: true\n' ''
+expect_contract_reject "missing release concurrency cancellation" "$mutant" "$HELPER"
+
+mutant="$TMP/workflow-wrong-concurrency-key.yml"
+replace_once "$WORKFLOW" "$mutant" \
+  'hov-tool-drop-announce-${{ github.repository }}-${{ github.event.release.id }}' \
+  'hov-tool-drop-announce-${{ github.repository }}-${{ github.event.release.tag_name }}'
+expect_contract_reject "release ID removed from concurrency key" "$mutant" "$HELPER"
+
+mutant="$TMP/workflow-root-concurrency.yml"
+replace_once "$WORKFLOW" "$mutant" $'permissions: {}\n' \
+  $'permissions: {}\n\nconcurrency:\n  group: hov-tool-drop-announce\n  cancel-in-progress: true\n'
+expect_contract_reject "root concurrency can cancel unrelated releases" "$mutant" "$HELPER"
+
+mutant="$TMP/workflow-stale-job-filter.yml"
+replace_once "$WORKFLOW" "$mutant" $'  announce:\n    concurrency:' \
+  $'  announce:\n    if: github.event.release.draft == false && github.event.release.prerelease == false\n    concurrency:'
+expect_contract_reject "stale event job filter" "$mutant" "$HELPER"
+
+mutant="$TMP/workflow-missing-current-release-fetch.yml"
+replace_once "$WORKFLOW" "$mutant" \
+  'gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" >"$CURRENT_RELEASE_FILE"' \
+  ': >"$CURRENT_RELEASE_FILE"'
+expect_contract_reject "missing current release fetch" "$mutant" "$HELPER"
+
+mutant="$TMP/workflow-latest-as-current.yml"
+replace_once "$WORKFLOW" "$mutant" \
+  'gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" >"$CURRENT_RELEASE_FILE"' \
+  'gh api "repos/$GITHUB_REPOSITORY/releases/latest" >"$CURRENT_RELEASE_FILE"'
+expect_contract_reject "current release fetch weakened to latest" "$mutant" "$HELPER"
+
+mutant="$TMP/workflow-stale-event-body.yml"
+replace_once "$WORKFLOW" "$mutant" \
+  $'          RELEASE_ID: ${{ github.event.release.id }}\n          RELEASE_TAG: ${{ github.event.release.tag_name }}\n          CURRENT_RELEASE_FILE: ${{ runner.temp }}/hov-tool-drop-current-release.json\n' \
+  $'          RELEASE_ID: ${{ github.event.release.id }}\n          RELEASE_TAG: ${{ github.event.release.tag_name }}\n          RELEASE_NOTES: ${{ github.event.release.body }}\n          CURRENT_RELEASE_FILE: ${{ runner.temp }}/hov-tool-drop-current-release.json\n'
+expect_contract_reject "stale event body authority" "$mutant" "$HELPER"
+
+mutant="$TMP/workflow-missing-helper-current-file.yml"
+replace_once "$WORKFLOW" "$mutant" \
+  $'          RELEASE_TAG: ${{ github.event.release.tag_name }}\n          CURRENT_RELEASE_FILE: ${{ runner.temp }}/hov-tool-drop-current-release.json\n          LATEST_STABLE_ID:' \
+  $'          RELEASE_TAG: ${{ github.event.release.tag_name }}\n          LATEST_STABLE_ID:'
+expect_contract_reject "current release file not passed to helper" "$mutant" "$HELPER"
+
+mutant="$TMP/workflow-published-only-announce-step.yml"
+replace_once "$WORKFLOW" "$mutant" $'      - name: Announce release\n        env:' \
+  $'      - name: Announce release\n        if: github.event.action == '\''published'\''\n        env:'
+expect_contract_reject "published-only announce step" "$mutant" "$HELPER"
+
 mutant="$TMP/workflow-mutable-ref.yml"
 replace_once "$WORKFLOW" "$mutant" 'ref: ${{ job.workflow_sha }}' 'ref: main'
 expect_contract_reject "mutable helper checkout" "$mutant" "$HELPER"
@@ -210,6 +313,24 @@ mutant="$TMP/helper-zero-release-id.sh"
 replace_once "$HELPER" "$mutant" '[[ "$1" =~ ^[1-9][0-9]*$ ]]' '[[ "$1" =~ ^(0|[1-9][0-9]*)$ ]]'
 expect_contract_reject "zero-permitting release ID validation" "$WORKFLOW" "$mutant"
 
+mutant="$TMP/helper-current-id-mismatch-accepted.sh"
+replace_once "$HELPER" "$mutant" \
+  '((.id | tostring) == $expected_id)' \
+  '((.id | tostring) != $expected_id)'
+expect_contract_reject "current release ID match removed" "$WORKFLOW" "$mutant"
+
+mutant="$TMP/helper-stale-event-notes.sh"
+replace_once "$HELPER" "$mutant" \
+  'notes="$(printf '\''%s'\'' "${CURRENT_RELEASE_NOTES:-}" | tr -d '\''\r'\'')"' \
+  'notes="$(printf '\''%s'\'' "${RELEASE_NOTES:-}" | tr -d '\''\r'\'')"'
+expect_contract_reject "stale event notes restored" "$WORKFLOW" "$mutant"
+
+mutant="$TMP/helper-published-only.sh"
+replace_once "$HELPER" "$mutant" \
+  '[[ "$EVENT_ACTION" == published || "$EVENT_ACTION" == edited ]] || fail "unsupported release action: $EVENT_ACTION"' \
+  '[[ "$EVENT_ACTION" == published ]] || fail "unsupported release action: $EVENT_ACTION"'
+expect_contract_reject "edited release action removed" "$WORKFLOW" "$mutant"
+
 mutant="$TMP/helper-mutable-send-body.sh"
 replace_once "$HELPER" "$mutant" \
   'local -r request_body="$1" expected_sha="$2" oidc_token="$3"' \
@@ -229,14 +350,26 @@ replace_once "$HELPER" "$mutant" \
 expect_contract_reject "token mask ordering" "$WORKFLOW" "$mutant"
 
 mutant="$TMP/helper-stale-retry-token.sh"
-fresh_mint_block=$'  for attempt in 1 2; do\n    http_status=\'\'\n    if ! oidc_token="$(mint_oidc_token "$audience")"; then\n      fail "could not mint OIDC token"\n    fi'
-stale_mint_block=$'  if ! oidc_token="$(mint_oidc_token "$audience")"; then\n    fail "could not mint OIDC token"\n  fi\n  for attempt in 1 2; do\n    http_status=\'\''
+fresh_mint_block=$'  for ((attempt = 1; attempt <= ANNOUNCE_MAX_ATTEMPTS; attempt += 1)); do\n    http_status=\'\'\n    if ! oidc_token="$(mint_oidc_token "$audience")"; then\n      fail "could not mint OIDC token"\n    fi'
+stale_mint_block=$'  if ! oidc_token="$(mint_oidc_token "$audience")"; then\n    fail "could not mint OIDC token"\n  fi\n  for ((attempt = 1; attempt <= ANNOUNCE_MAX_ATTEMPTS; attempt += 1)); do\n    http_status=\'\''
 replace_once "$HELPER" "$mutant" "$fresh_mint_block" "$stale_mint_block"
-expect_contract_reject "stale retry token" "$WORKFLOW" "$mutant"
+expect_contract_reject "OIDC mint outside retry loop" "$WORKFLOW" "$mutant"
 
 mutant="$TMP/helper-unbounded-retry.sh"
-replace_once "$HELPER" "$mutant" 'for attempt in 1 2; do' 'while true; do'
+replace_once "$HELPER" "$mutant" \
+  'for ((attempt = 1; attempt <= ANNOUNCE_MAX_ATTEMPTS; attempt += 1)); do' \
+  'while true; do'
 expect_contract_reject "unbounded retry loop" "$WORKFLOW" "$mutant"
+
+mutant="$TMP/helper-wider-attempt-budget.sh"
+replace_once "$HELPER" "$mutant" 'readonly ANNOUNCE_MAX_ATTEMPTS=8' 'readonly ANNOUNCE_MAX_ATTEMPTS=9'
+expect_contract_reject "widened retry attempt budget" "$WORKFLOW" "$mutant"
+
+mutant="$TMP/helper-incomplete-jitter-key.sh"
+replace_once "$HELPER" "$mutant" \
+  'sha256_bytes "$jitter_repository:$jitter_release_id:$jitter_attempt"' \
+  'sha256_bytes "$jitter_repository:$jitter_release_id"'
+expect_contract_reject "incomplete retry jitter key" "$WORKFLOW" "$mutant"
 
 mutant="$TMP/helper-wide-retry-after.sh"
 replace_once "$HELPER" "$mutant" \
@@ -244,10 +377,16 @@ replace_once "$HELPER" "$mutant" \
   '^[1-9][0-9]*$'
 expect_contract_reject "widened Retry-After validation" "$WORKFLOW" "$mutant"
 
+mutant="$TMP/helper-wide-retry-status.sh"
+replace_once "$HELPER" "$mutant" \
+  'if [[ "$http_status" != 409 && "$http_status" != 429 ]]; then' \
+  'if [[ "$http_status" != 409 && "$http_status" != 429 && "$http_status" != 503 ]]; then'
+expect_contract_reject "widened retry status set" "$WORKFLOW" "$mutant"
+
 mutant="$TMP/helper-raw-retry-sleep.sh"
 raw_header_parse='retry_after="$(sed -n "s/^Retry-After: //p" "$response_headers")"'
 replace_once "$HELPER" "$mutant" \
-  'retry_after="$(retry_after_seconds "$response_headers")"' \
+  'retry_after="$(retry_after_seconds "$response_headers" "$http_status")"' \
   "$raw_header_parse"
 expect_contract_reject "raw Retry-After sleep" "$WORKFLOW" "$mutant"
 
@@ -263,6 +402,7 @@ FIXTURE_TAG="v$FIXTURE_VERSION"
 FIXTURE_RELEASE_ID='42'
 SOURCE_ROOT="$TMP/source"
 MANIFEST="$TMP/marketplace.json"
+CURRENT_RELEASE_FILE="$TMP/current-release.json"
 FAKE_BIN="$TMP/bin"
 CALLS_FILE="$TMP/curl-calls"
 BODY_FILE="$TMP/request-body"
@@ -275,6 +415,7 @@ SLEEP_DELAYS_FILE="$TMP/sleep-delays"
 RESPONSE_PATHS_FILE="$TMP/response-paths"
 OIDC_URL='https://token.actions.test/oidc?api-version=fixture'
 ORIGINAL_PATH="$PATH"
+readonly FAKE_MAX_ATTEMPTS=8
 mkdir -p "$SOURCE_ROOT/.claude-plugin" "$FAKE_BIN"
 
 printf '%s\n' "$FIXTURE_VERSION" >"$SOURCE_ROOT/VERSION"
@@ -469,42 +610,58 @@ FAKE_SLEEP
 chmod +x "$FAKE_BIN/sleep"
 
 reset_capture() {
+  local attempt
   : >"$CALLS_FILE"
   : >"$MINTED_TOKENS_FILE"
   : >"$POST_TOKENS_FILE"
   : >"$SLEEP_DELAYS_FILE"
   : >"$RESPONSE_PATHS_FILE"
   rm -f "$BODY_FILE" "$BODY_FILE".* "$HEADERS_FILE" "$URL_FILE" "$AUDIENCE_FILE" "$AUDIENCE_FILE".*
-  FAKE_POST_STATUS_1=200
-  FAKE_POST_STATUS_2=200
-  FAKE_RESPONSE_BODY_1='{"ok":true}'
-  FAKE_RESPONSE_BODY_2='{"ok":true}'
-  FAKE_RETRY_AFTER_PRESENT_1=false
-  FAKE_RETRY_AFTER_PRESENT_2=false
-  FAKE_RETRY_AFTER_1=''
-  FAKE_RETRY_AFTER_2=''
-  FAKE_RETRY_AFTER_COUNT_1=1
-  FAKE_RETRY_AFTER_COUNT_2=1
-  FAKE_INFORMATIONAL_RETRY_AFTER_PRESENT_1=false
-  FAKE_INFORMATIONAL_RETRY_AFTER_PRESENT_2=false
-  FAKE_INFORMATIONAL_RETRY_AFTER_1=''
-  FAKE_INFORMATIONAL_RETRY_AFTER_2=''
-  FAKE_TRANSPORT_EXIT_1=0
-  FAKE_TRANSPORT_EXIT_2=0
+  for ((attempt = 1; attempt <= FAKE_MAX_ATTEMPTS; attempt += 1)); do
+    printf -v "FAKE_POST_STATUS_$attempt" '%s' 200
+    printf -v "FAKE_RESPONSE_BODY_$attempt" '%s' '{"ok":true}'
+    printf -v "FAKE_RETRY_AFTER_PRESENT_$attempt" '%s' false
+    printf -v "FAKE_RETRY_AFTER_$attempt" '%s' ''
+    printf -v "FAKE_RETRY_AFTER_COUNT_$attempt" '%s' 1
+    printf -v "FAKE_INFORMATIONAL_RETRY_AFTER_PRESENT_$attempt" '%s' false
+    printf -v "FAKE_INFORMATIONAL_RETRY_AFTER_$attempt" '%s' ''
+    printf -v "FAKE_TRANSPORT_EXIT_$attempt" '%s' 0
+  done
+  write_current_release "$FIXTURE_RELEASE_ID" "$FIXTURE_TAG" "$VALID_NOTES" false false
+}
+
+write_current_release() {
+  jq -n \
+    --argjson id "$1" --arg tag_name "$2" --arg body "$3" \
+    --argjson draft "$4" --argjson prerelease "$5" \
+    '{id: $id, tag_name: $tag_name, body: $body, draft: $draft, prerelease: $prerelease}' \
+    >"$CURRENT_RELEASE_FILE"
 }
 
 run_helper() {
-  local helper="$1" manifest="$2" release_id="$3" latest_id="$4" source_sha="$5" release_notes="$6"
-  shift 6
+  local helper="$1" manifest="$2" release_id="$3" latest_id="$4" source_sha="$5"
+  local current_release_file="$6" event_action="$7"
+  local attempt variable
+  local -a fake_response_env=()
+  shift 7
+  for ((attempt = 1; attempt <= FAKE_MAX_ATTEMPTS; attempt += 1)); do
+    for variable in FAKE_POST_STATUS FAKE_RESPONSE_BODY FAKE_RETRY_AFTER_PRESENT \
+      FAKE_RETRY_AFTER FAKE_RETRY_AFTER_COUNT FAKE_INFORMATIONAL_RETRY_AFTER_PRESENT \
+      FAKE_INFORMATIONAL_RETRY_AFTER FAKE_TRANSPORT_EXIT; do
+      variable="${variable}_$attempt"
+      fake_response_env+=("$variable=${!variable}")
+    done
+  done
   env \
     PATH="$FAKE_BIN:$ORIGINAL_PATH" \
-    EVENT_ACTION=published \
+    EVENT_ACTION="$event_action" \
     REPOSITORY="$FIXTURE_REPOSITORY" \
     RELEASE_ID="$release_id" \
     RELEASE_TAG="$FIXTURE_TAG" \
-    RELEASE_NOTES="$release_notes" \
-    RELEASE_PRERELEASE=false \
-    RELEASE_DRAFT=false \
+    CURRENT_RELEASE_FILE="$current_release_file" \
+    RELEASE_NOTES="$HYPOTHETICAL_EVENT_NOTES" \
+    RELEASE_PRERELEASE=true \
+    RELEASE_DRAFT=true \
     LATEST_STABLE_ID="$latest_id" \
     SOURCE_ROOT="$SOURCE_ROOT" \
     SOURCE_SHA="$source_sha" \
@@ -521,22 +678,7 @@ run_helper() {
     FAKE_CURL_POST_TOKENS_FILE="$POST_TOKENS_FILE" \
     FAKE_CURL_RESPONSE_PATHS_FILE="$RESPONSE_PATHS_FILE" \
     FAKE_SLEEP_DELAYS_FILE="$SLEEP_DELAYS_FILE" \
-    FAKE_POST_STATUS_1="$FAKE_POST_STATUS_1" \
-    FAKE_POST_STATUS_2="$FAKE_POST_STATUS_2" \
-    FAKE_RESPONSE_BODY_1="$FAKE_RESPONSE_BODY_1" \
-    FAKE_RESPONSE_BODY_2="$FAKE_RESPONSE_BODY_2" \
-    FAKE_RETRY_AFTER_PRESENT_1="$FAKE_RETRY_AFTER_PRESENT_1" \
-    FAKE_RETRY_AFTER_PRESENT_2="$FAKE_RETRY_AFTER_PRESENT_2" \
-    FAKE_RETRY_AFTER_1="$FAKE_RETRY_AFTER_1" \
-    FAKE_RETRY_AFTER_2="$FAKE_RETRY_AFTER_2" \
-    FAKE_RETRY_AFTER_COUNT_1="$FAKE_RETRY_AFTER_COUNT_1" \
-    FAKE_RETRY_AFTER_COUNT_2="$FAKE_RETRY_AFTER_COUNT_2" \
-    FAKE_INFORMATIONAL_RETRY_AFTER_PRESENT_1="$FAKE_INFORMATIONAL_RETRY_AFTER_PRESENT_1" \
-    FAKE_INFORMATIONAL_RETRY_AFTER_PRESENT_2="$FAKE_INFORMATIONAL_RETRY_AFTER_PRESENT_2" \
-    FAKE_INFORMATIONAL_RETRY_AFTER_1="$FAKE_INFORMATIONAL_RETRY_AFTER_1" \
-    FAKE_INFORMATIONAL_RETRY_AFTER_2="$FAKE_INFORMATIONAL_RETRY_AFTER_2" \
-    FAKE_TRANSPORT_EXIT_1="$FAKE_TRANSPORT_EXIT_1" \
-    FAKE_TRANSPORT_EXIT_2="$FAKE_TRANSPORT_EXIT_2" \
+    "${fake_response_env[@]}" \
     TOOL_RELEASES_ENDPOINT=https://attacker.invalid/constant \
     ANNOUNCE_URL=https://attacker.invalid/env \
     ANNOUNCE_SECRET=legacy-secret-must-be-ignored \
@@ -580,8 +722,9 @@ assert_one_bound_request() {
 }
 
 VALID_NOTES=$'## Highlights\n- First safe improvement\n- Second exact detail'
+HYPOTHETICAL_EVENT_NOTES=$'## Highlights\n- Stale event notes must never win'
 reset_capture
-if ! run_helper "$HELPER" "$MANIFEST" "$FIXTURE_RELEASE_ID" "$FIXTURE_RELEASE_ID" "$SOURCE_SHA" "$VALID_NOTES" >"$TMP/run-output" 2>&1; then
+if ! run_helper "$HELPER" "$MANIFEST" "$FIXTURE_RELEASE_ID" "$FIXTURE_RELEASE_ID" "$SOURCE_SHA" "$CURRENT_RELEASE_FILE" published >"$TMP/run-output" 2>&1; then
   command cat "$TMP/run-output" >&2
   die "valid fixture"
 fi
@@ -594,7 +737,8 @@ jq -e \
   --arg notes $'First safe improvement\nSecond exact detail' \
   '.operation == "announce" and .repository == $repository and .releaseId == $release_id and (.releaseId | type == "string") and .notesSummary == $notes and (.notesSummary | length <= 600)' \
   "$BODY_FILE" >/dev/null || die "valid request body values"
-pass "valid fixture sends one exact, bearer-authenticated request to the fixed endpoint"
+! grep -Fq 'Stale event notes' "$BODY_FILE" || die "hypothetical event notes overrode the current release file"
+pass "validated current notes override stale event state in one exact fixed-endpoint request"
 
 baseline_audience="$(<"$AUDIENCE_FILE")"
 CHANGED_RELEASE_ID='43'
@@ -603,7 +747,8 @@ jq --argjson release_id "$CHANGED_RELEASE_ID" \
   '(.plugins[0].metadata.releaseId) = $release_id' \
   "$MANIFEST" >"$CHANGED_MANIFEST"
 reset_capture
-if ! run_helper "$HELPER" "$CHANGED_MANIFEST" "$CHANGED_RELEASE_ID" "$CHANGED_RELEASE_ID" "$SOURCE_SHA" "$VALID_NOTES" >"$TMP/run-output" 2>&1; then
+write_current_release "$CHANGED_RELEASE_ID" "$FIXTURE_TAG" "$VALID_NOTES" false false
+if ! run_helper "$HELPER" "$CHANGED_MANIFEST" "$CHANGED_RELEASE_ID" "$CHANGED_RELEASE_ID" "$SOURCE_SHA" "$CURRENT_RELEASE_FILE" published >"$TMP/run-output" 2>&1; then
   command cat "$TMP/run-output" >&2
   die "changed release ID fixture"
 fi
@@ -615,9 +760,12 @@ changed_audience="$(<"$AUDIENCE_FILE")"
 pass "changing the exact releaseId string changes the bound OIDC audience digest"
 
 reset_capture
+current_release_tmp="$TMP/current-release-null.json"
+jq '.body = null' "$CURRENT_RELEASE_FILE" >"$current_release_tmp"
+mv "$current_release_tmp" "$CURRENT_RELEASE_FILE"
 FAKE_POST_STATUS_1=299
 FAKE_RESPONSE_BODY_1='{"ok":true,"status":299}'
-if ! run_helper "$HELPER" "$MANIFEST" "$FIXTURE_RELEASE_ID" "$FIXTURE_RELEASE_ID" "$SOURCE_SHA" '' >"$TMP/run-output" 2>&1; then
+if ! run_helper "$HELPER" "$MANIFEST" "$FIXTURE_RELEASE_ID" "$FIXTURE_RELEASE_ID" "$SOURCE_SHA" "$CURRENT_RELEASE_FILE" published >"$TMP/run-output" 2>&1; then
   command cat "$TMP/run-output" >&2
   die "empty notes fixture"
 fi
@@ -627,7 +775,8 @@ pass "empty notes omit notesSummary and a non-200 2xx response succeeds"
 
 LONG_NOTES="$(python3 -c 'print("é" * 700, end="")')"
 reset_capture
-if ! run_helper "$HELPER" "$MANIFEST" "$FIXTURE_RELEASE_ID" "$FIXTURE_RELEASE_ID" "$SOURCE_SHA" "$LONG_NOTES" >"$TMP/run-output" 2>&1; then
+write_current_release "$FIXTURE_RELEASE_ID" "$FIXTURE_TAG" "$LONG_NOTES" false false
+if ! run_helper "$HELPER" "$MANIFEST" "$FIXTURE_RELEASE_ID" "$FIXTURE_RELEASE_ID" "$SOURCE_SHA" "$CURRENT_RELEASE_FILE" published >"$TMP/run-output" 2>&1; then
   command cat "$TMP/run-output" >&2
   die "bounded notes fixture"
 fi
@@ -635,40 +784,61 @@ assert_one_bound_request '["notesSummary","operation","releaseId","repository"]'
 jq -e '.notesSummary | length == 600' "$BODY_FILE" >/dev/null || die "notesSummary was not bounded to 600 characters"
 pass "notesSummary is character-safe and bounded"
 
-reset_capture
-FAKE_POST_STATUS_1=429
-FAKE_RESPONSE_BODY_1='{"error":"lease held"}'
-FAKE_RETRY_AFTER_PRESENT_1=true
-FAKE_RETRY_AFTER_1=7
-FAKE_POST_STATUS_2=200
-FAKE_RESPONSE_BODY_2='{"ok":true,"attempt":2}'
-if ! run_helper "$HELPER" "$MANIFEST" "$FIXTURE_RELEASE_ID" "$FIXTURE_RELEASE_ID" "$SOURCE_SHA" "$VALID_NOTES" >"$TMP/run-output" 2>&1; then
-  command cat "$TMP/run-output" >&2
-  die "bounded 429 recovery fixture"
-fi
-mapfile -t retry_calls <"$CALLS_FILE"
-[[ "${retry_calls[*]}" == 'mint post sleep mint post' ]] || die "bounded recovery did not follow mint, post, sleep, mint, post"
-[[ "$(<"$SLEEP_DELAYS_FILE")" == 9 ]] || die "bounded recovery did not add the two-second lease cushion"
-cmp -s "$BODY_FILE.1" "$BODY_FILE.2" || die "bounded recovery changed request body bytes between attempts"
-expected_retry_body='{"operation":"announce","repository":"fixture-tool","releaseId":"42","notesSummary":"First safe improvement\nSecond exact detail"}'
-[[ "$(<"$BODY_FILE.1")" == "$expected_retry_body" ]] || die "bounded recovery changed the compact request body"
-cmp -s "$AUDIENCE_FILE.1" "$AUDIENCE_FILE.2" || die "bounded recovery changed the body-bound audience"
-retry_body_sha="$(sha256_file_bytes "$BODY_FILE.1")"
-[[ "$(<"$AUDIENCE_FILE.1")" == "$FIXED_ENDPOINT#sha256=$retry_body_sha" ]] || die "bounded recovery audience did not bind the retried body bytes"
-mapfile -t retry_tokens <"$MINTED_TOKENS_FILE"
-[[ ${#retry_tokens[@]} -eq 2 && "${retry_tokens[0]}" != "${retry_tokens[1]}" ]] || die "bounded recovery reused the first OIDC token"
-cmp -s "$MINTED_TOKENS_FILE" "$POST_TOKENS_FILE" || die "a POST did not use its corresponding freshly minted token"
-grep -Fq "::add-mask::${retry_tokens[0]}" "$TMP/run-output" || die "first retry fixture token was not masked"
-grep -Fq "::add-mask::${retry_tokens[1]}" "$TMP/run-output" || die "second retry fixture token was not masked"
-grep -Fq "$FAKE_RESPONSE_BODY_2" "$TMP/run-output" || die "successful retry response body was not printed"
-mapfile -t retry_response_paths <"$RESPONSE_PATHS_FILE"
-[[ ${#retry_response_paths[@]} -eq 4 ]] || die "bounded recovery did not use response/header capture files for both attempts"
-retry_response_dir="$(dirname "${retry_response_paths[0]}")"
-for response_path in "${retry_response_paths[@]}"; do
-  [[ "$(dirname "$response_path")" == "$retry_response_dir" ]] || die "response/header files did not share one unique temporary directory"
-done
-[[ ! -e "$retry_response_dir" ]] || die "bounded recovery did not clean its response directory"
-pass "a first 429 sleeps for Retry-After plus two and retries once with a fresh body-bound token"
+plan_response() {
+  local attempt="$1" status="$2" retry_after="${3:-}"
+  printf -v "FAKE_POST_STATUS_$attempt" '%s' "$status"
+  printf -v "FAKE_RESPONSE_BODY_$attempt" '%s' "{\"status\":$status,\"attempt\":$attempt}"
+  if [[ -n "$retry_after" ]]; then
+    printf -v "FAKE_RETRY_AFTER_PRESENT_$attempt" '%s' true
+    printf -v "FAKE_RETRY_AFTER_$attempt" '%s' "$retry_after"
+  fi
+}
+
+assert_successful_retry() {
+  local attempts="$1" label="$2" expected_delays="$3" attempt body_sha response_var token
+  local -a calls expected_calls tokens
+  mapfile -t calls <"$CALLS_FILE"
+  for ((attempt = 1; attempt <= attempts; attempt += 1)); do
+    expected_calls+=(mint post)
+    ((attempt == attempts)) || expected_calls+=(sleep)
+  done
+  [[ "${calls[*]}" == "${expected_calls[*]}" ]] || die "$label call order or attempt bound changed"
+  [[ "$(<"$SLEEP_DELAYS_FILE")" == "$expected_delays" ]] || die "$label sleep sequence changed"
+  mapfile -t tokens <"$MINTED_TOKENS_FILE"
+  [[ ${#tokens[@]} -eq "$attempts" && "$(sort -u "$MINTED_TOKENS_FILE" | wc -l)" -eq "$attempts" ]] || die "$label reused an OIDC token"
+  cmp -s "$MINTED_TOKENS_FILE" "$POST_TOKENS_FILE" || die "$label POST token did not match each fresh mint"
+  for token in "${tokens[@]}"; do
+    grep -Fq "::add-mask::$token" "$TMP/run-output" || die "$label left a token unmasked"
+  done
+  for ((attempt = 2; attempt <= attempts; attempt += 1)); do
+    cmp -s "$BODY_FILE.1" "$BODY_FILE.$attempt" || die "$label changed request body bytes"
+    cmp -s "$AUDIENCE_FILE.1" "$AUDIENCE_FILE.$attempt" || die "$label changed the body-bound audience"
+  done
+  body_sha="$(sha256_file_bytes "$BODY_FILE.1")"
+  [[ "$(<"$AUDIENCE_FILE.1")" == "$FIXED_ENDPOINT#sha256=$body_sha" ]] || die "$label audience did not bind the immutable bytes"
+  [[ ! -e "$BODY_FILE.$((attempts + 1))" && ! -e "$AUDIENCE_FILE.$((attempts + 1))" ]] || die "$label created an extra-attempt artifact"
+  response_var="FAKE_RESPONSE_BODY_$attempts"
+  grep -Fq "${!response_var}" "$TMP/run-output" || die "$label did not print its successful response"
+  assert_response_capture_cleaned "$((attempts * 2))" "$label"
+}
+
+expect_three_attempt_recovery() {
+  local label="$1" action="$2" first_status="$3" second_status="$4"
+  reset_capture
+  plan_response 1 "$first_status" 4
+  plan_response 2 "$second_status" 3
+  plan_response 3 200
+  if ! run_helper "$HELPER" "$MANIFEST" "$FIXTURE_RELEASE_ID" "$FIXTURE_RELEASE_ID" "$SOURCE_SHA" "$CURRENT_RELEASE_FILE" "$action" >"$TMP/run-output" 2>&1; then
+    command cat "$TMP/run-output" >&2
+    die "$label"
+  fi
+  assert_successful_retry 3 "$label" $'8\n5'
+  pass "$label succeeds with immutable bytes and fresh corresponding tokens"
+}
+
+expect_three_attempt_recovery "repeated 429 -> 429 -> 200 recovery" published 429 429
+expect_three_attempt_recovery "repeated 409 -> 409 -> 200 recovery" published 409 409
+expect_three_attempt_recovery "mixed 409 -> 429 -> 200 recovery" published 409 429
 
 expect_first_post_failure() {
   local label="$1" status="$2" retry_present="$3" retry_value="$4"
@@ -682,7 +852,7 @@ expect_first_post_failure() {
   FAKE_RETRY_AFTER_1="$retry_value"
   FAKE_RETRY_AFTER_COUNT_1="$retry_count"
   FAKE_TRANSPORT_EXIT_1="$transport_exit"
-  if run_helper "$HELPER" "$MANIFEST" "$FIXTURE_RELEASE_ID" "$FIXTURE_RELEASE_ID" "$SOURCE_SHA" "$VALID_NOTES" >"$TMP/run-output" 2>&1; then
+  if run_helper "$HELPER" "$MANIFEST" "$FIXTURE_RELEASE_ID" "$FIXTURE_RELEASE_ID" "$SOURCE_SHA" "$CURRENT_RELEASE_FILE" published >"$TMP/run-output" 2>&1; then
     die "$label unexpectedly succeeded"
   fi
 
@@ -697,34 +867,28 @@ expect_first_post_failure() {
   pass "$label"
 }
 
-expect_first_post_failure \
-  "missing Retry-After is rejected without retry" \
-  429 false '' 1 0 'canonical Retry-After' '{"error":"missing retry delay"}'
-expect_first_post_failure \
-  "noncanonical Retry-After is rejected without retry" \
-  429 true 07 1 0 'canonical Retry-After' '{"error":"leading zero"}'
-expect_first_post_failure \
-  "malformed Retry-After is rejected without retry" \
-  429 true 'Wed, 21 Oct 2015 07:28:00 GMT' 1 0 'canonical Retry-After' '{"error":"HTTP date"}'
-expect_first_post_failure \
-  "folded Retry-After is rejected without retry" \
-  429 true $'7\r\n 00' 1 0 'canonical Retry-After' '{"error":"obsolete folded value"}'
-expect_first_post_failure \
-  "zero Retry-After is rejected without retry" \
-  429 true 0 1 0 'canonical Retry-After' '{"error":"zero delay"}'
-expect_first_post_failure \
-  "Retry-After above 600 is rejected without retry" \
-  429 true 601 1 0 'canonical Retry-After' '{"error":"delay too large"}'
-expect_first_post_failure \
-  "duplicate Retry-After is rejected without retry" \
-  429 true 7 2 0 'canonical Retry-After' '{"error":"duplicate delay"}'
+expect_invalid_retry_after_table() {
+  local status="$1"
+  expect_first_post_failure "HTTP $status missing Retry-After" "$status" false '' 1 0 'canonical Retry-After' '{"error":"missing retry delay"}'
+  expect_first_post_failure "HTTP $status malformed Retry-After" "$status" true seven 1 0 'canonical Retry-After' '{"error":"malformed delay"}'
+  expect_first_post_failure "HTTP $status duplicate Retry-After" "$status" true 7 2 0 'canonical Retry-After' '{"error":"duplicate delay"}'
+  expect_first_post_failure "HTTP $status folded Retry-After" "$status" true $'7\r\n 00' 1 0 'canonical Retry-After' '{"error":"obsolete folded value"}'
+  expect_first_post_failure "HTTP $status date Retry-After" "$status" true 'Wed, 21 Oct 2015 07:28:00 GMT' 1 0 'canonical Retry-After' '{"error":"HTTP date"}'
+  expect_first_post_failure "HTTP $status zero Retry-After" "$status" true 0 1 0 'canonical Retry-After' '{"error":"zero delay"}'
+  expect_first_post_failure "HTTP $status leading-zero Retry-After" "$status" true 07 1 0 'canonical Retry-After' '{"error":"leading zero"}'
+  expect_first_post_failure "HTTP $status Retry-After above 600" "$status" true 601 1 0 'canonical Retry-After' '{"error":"delay too large"}'
+}
+
+for retry_status in 409 429; do
+  expect_invalid_retry_after_table "$retry_status"
+done
 
 reset_capture
 FAKE_POST_STATUS_1=429
 FAKE_RESPONSE_BODY_1='{"error":"final response has no delay"}'
 FAKE_INFORMATIONAL_RETRY_AFTER_PRESENT_1=true
 FAKE_INFORMATIONAL_RETRY_AFTER_1=7
-if run_helper "$HELPER" "$MANIFEST" "$FIXTURE_RELEASE_ID" "$FIXTURE_RELEASE_ID" "$SOURCE_SHA" "$VALID_NOTES" >"$TMP/run-output" 2>&1; then
+if run_helper "$HELPER" "$MANIFEST" "$FIXTURE_RELEASE_ID" "$FIXTURE_RELEASE_ID" "$SOURCE_SHA" "$CURRENT_RELEASE_FILE" published >"$TMP/run-output" 2>&1; then
   die "informational Retry-After unexpectedly authorized a retry"
 fi
 mapfile -t informational_calls <"$CALLS_FILE"
@@ -734,15 +898,38 @@ grep -Fq 'canonical Retry-After' "$TMP/run-output" || die "missing final-respons
 assert_response_capture_cleaned 2 "informational Retry-After"
 pass "Retry-After from an earlier HTTP block cannot authorize a final 429 retry"
 
+reset_capture
+plan_response 1 409 4
+plan_response 2 200
+if ! run_helper "$HELPER" "$MANIFEST" "$FIXTURE_RELEASE_ID" "$FIXTURE_RELEASE_ID" "$SOURCE_SHA" "$CURRENT_RELEASE_FILE" edited >"$TMP/run-output" 2>&1; then
+  command cat "$TMP/run-output" >&2
+  die "canonical 409 recovery fixture"
+fi
+assert_successful_retry 2 "canonical edited 409 recovery" 8
+pass "an edited event accepts canonical 409 recovery"
+
+reset_capture
+for ((attempt = 1; attempt < FAKE_MAX_ATTEMPTS; attempt += 1)); do
+  if ((attempt == 1)); then
+    plan_response "$attempt" 409 3
+  else
+    plan_response "$attempt" 429 3
+  fi
+done
+plan_response "$FAKE_MAX_ATTEMPTS" 200
+if ! run_helper "$HELPER" "$MANIFEST" "$FIXTURE_RELEASE_ID" "$FIXTURE_RELEASE_ID" "$SOURCE_SHA" "$CURRENT_RELEASE_FILE" edited >"$TMP/run-output" 2>&1; then
+  command cat "$TMP/run-output" >&2
+  die "edited exact attempt-eight success fixture"
+fi
+assert_successful_retry 8 "edited 409 + six 429 + attempt-eight success" $'7\n5\n8\n7\n8\n5\n5'
+pass "an edited event succeeds exactly on attempt eight without ninth-attempt artifacts"
+
 expect_first_post_failure \
   "HTTP 401 is rejected without retry" \
   401 false '' 1 0 'HTTP 401' '{"error":"unauthorized"}'
 expect_first_post_failure \
   "HTTP 403 is rejected without retry" \
   403 false '' 1 0 'HTTP 403' '{"error":"forbidden"}'
-expect_first_post_failure \
-  "HTTP 409 is rejected without retry" \
-  409 false '' 1 0 'HTTP 409' '{"error":"tuple conflict"}'
 expect_first_post_failure \
   "redirect response is rejected without following or retrying" \
   302 false '' 1 0 'HTTP 302' '{"error":"redirect refused"}'
@@ -760,29 +947,32 @@ expect_first_post_failure \
   200 false '' 1 7 'transport failure (curl exit 7)' '{"error":"partial transport body"}'
 
 reset_capture
-FAKE_POST_STATUS_1=429
-FAKE_RESPONSE_BODY_1='{"error":"first lease"}'
-FAKE_RETRY_AFTER_PRESENT_1=true
-FAKE_RETRY_AFTER_1=3
-FAKE_POST_STATUS_2=429
-FAKE_RESPONSE_BODY_2='{"error":"second lease"}'
-FAKE_RETRY_AFTER_PRESENT_2=true
-FAKE_RETRY_AFTER_2=3
-if run_helper "$HELPER" "$MANIFEST" "$FIXTURE_RELEASE_ID" "$FIXTURE_RELEASE_ID" "$SOURCE_SHA" "$VALID_NOTES" >"$TMP/run-output" 2>&1; then
-  die "second HTTP 429 unexpectedly succeeded"
+for ((attempt = 1; attempt <= FAKE_MAX_ATTEMPTS; attempt += 1)); do
+  printf -v "FAKE_POST_STATUS_$attempt" '%s' 429
+  printf -v "FAKE_RESPONSE_BODY_$attempt" '%s' "{\"error\":\"lease $attempt\"}"
+  printf -v "FAKE_RETRY_AFTER_PRESENT_$attempt" '%s' true
+  printf -v "FAKE_RETRY_AFTER_$attempt" '%s' 3
+done
+if run_helper "$HELPER" "$MANIFEST" "$FIXTURE_RELEASE_ID" "$FIXTURE_RELEASE_ID" "$SOURCE_SHA" "$CURRENT_RELEASE_FILE" published >"$TMP/run-output" 2>&1; then
+  die "eight retryable responses unexpectedly succeeded"
 fi
-mapfile -t second_429_calls <"$CALLS_FILE"
-[[ "${second_429_calls[*]}" == 'mint post sleep mint post' ]] || die "second HTTP 429 escaped the one-retry bound"
-[[ "$(<"$SLEEP_DELAYS_FILE")" == 5 ]] || die "second HTTP 429 fixture did not use the first validated delay plus cushion"
-mapfile -t second_429_tokens <"$MINTED_TOKENS_FILE"
-[[ ${#second_429_tokens[@]} -eq 2 && "${second_429_tokens[0]}" != "${second_429_tokens[1]}" ]] || die "second HTTP 429 did not use two distinct mints"
-cmp -s "$MINTED_TOKENS_FILE" "$POST_TOKENS_FILE" || die "second HTTP 429 POST did not use its corresponding fresh token"
-grep -Fq 'remained HTTP 429 after one retry' "$TMP/run-output" || die "second HTTP 429 did not print bounded failure context"
-assert_response_capture_cleaned 4 "second HTTP 429"
-pass "a second HTTP 429 fails after exactly one bounded retry"
+mapfile -t exhausted_calls <"$CALLS_FILE"
+[[ "${exhausted_calls[*]}" == 'mint post sleep mint post sleep mint post sleep mint post sleep mint post sleep mint post sleep mint post sleep mint post' ]] || die "retry exhaustion crossed the eight-attempt boundary"
+[[ "$(<"$SLEEP_DELAYS_FILE")" == $'7\n5\n8\n7\n8\n5\n5' ]] || die "retry exhaustion jitter sequence was not deterministic and bounded"
+mapfile -t exhausted_tokens <"$MINTED_TOKENS_FILE"
+[[ ${#exhausted_tokens[@]} -eq 8 && "$(sort -u "$MINTED_TOKENS_FILE" | wc -l)" -eq 8 ]] || die "retry exhaustion did not mint eight distinct tokens"
+cmp -s "$MINTED_TOKENS_FILE" "$POST_TOKENS_FILE" || die "retry exhaustion POST token did not match each fresh mint"
+for ((attempt = 2; attempt <= FAKE_MAX_ATTEMPTS; attempt += 1)); do
+  cmp -s "$BODY_FILE.1" "$BODY_FILE.$attempt" || die "retry exhaustion changed request body bytes"
+  cmp -s "$AUDIENCE_FILE.1" "$AUDIENCE_FILE.$attempt" || die "retry exhaustion changed the body-bound audience"
+done
+[[ ! -e "$BODY_FILE.9" && ! -e "$AUDIENCE_FILE.9" ]] || die "retry exhaustion created ninth-attempt artifacts"
+grep -Fq 'exhausted 8 attempts' "$TMP/run-output" || die "retry exhaustion did not print the attempt budget"
+assert_response_capture_cleaned 16 "retry exhaustion"
+pass "eight retryable responses exhaust the budget without a ninth mint, POST, or sleep"
 
 reset_capture
-if run_helper "$HELPER" "$MANIFEST" "$FIXTURE_RELEASE_ID" "$FIXTURE_RELEASE_ID" "$SOURCE_SHA" "$VALID_NOTES" 'https://attacker.invalid/argument' >"$TMP/run-output" 2>&1; then
+if run_helper "$HELPER" "$MANIFEST" "$FIXTURE_RELEASE_ID" "$FIXTURE_RELEASE_ID" "$SOURCE_SHA" "$CURRENT_RELEASE_FILE" published 'https://attacker.invalid/argument' >"$TMP/run-output" 2>&1; then
   die "alternate URL argument unexpectedly succeeded"
 fi
 [[ ! -s "$CALLS_FILE" ]] || die "alternate URL argument reached curl"
@@ -791,7 +981,7 @@ pass "alternate URL argument is rejected before mint or send"
 expect_invalid_id_no_http() {
   local label="$1" release_id="$2" latest_id="$3" expected_message="$4"
   reset_capture
-  if run_helper "$HELPER" "$MANIFEST" "$release_id" "$latest_id" "$SOURCE_SHA" "$VALID_NOTES" >"$TMP/run-output" 2>&1; then
+  if run_helper "$HELPER" "$MANIFEST" "$release_id" "$latest_id" "$SOURCE_SHA" "$CURRENT_RELEASE_FILE" published >"$TMP/run-output" 2>&1; then
     die "$label unexpectedly succeeded"
   fi
   [[ ! -s "$CALLS_FILE" ]] || die "$label minted or sent a request"
@@ -808,10 +998,62 @@ expect_invalid_id_no_http "zero LATEST_STABLE_ID" "$FIXTURE_RELEASE_ID" 0 "$late
 expect_invalid_id_no_http "leading-zero LATEST_STABLE_ID" "$FIXTURE_RELEASE_ID" 042 "$latest_id_error"
 expect_invalid_id_no_http "malformed LATEST_STABLE_ID" "$FIXTURE_RELEASE_ID" invalid "$latest_id_error"
 
+expect_current_release_noop() {
+  local label="$1" draft="$2" prerelease="$3"
+  reset_capture
+  write_current_release "$FIXTURE_RELEASE_ID" "$FIXTURE_TAG" "$VALID_NOTES" "$draft" "$prerelease"
+  if ! run_helper "$HELPER" "$MANIFEST" "$FIXTURE_RELEASE_ID" "$FIXTURE_RELEASE_ID" "$SOURCE_SHA" "$CURRENT_RELEASE_FILE" edited >"$TMP/run-output" 2>&1; then
+    command cat "$TMP/run-output" >&2
+    die "$label"
+  fi
+  [[ ! -s "$CALLS_FILE" ]] || die "$label minted or sent a request"
+  grep -Fq 'prerelease or draft release ignored' "$TMP/run-output" || die "$label did not report its soft no-op"
+  pass "$label soft-no-ops before mint or send"
+}
+
+expect_invalid_current_release() {
+  local label="$1" filter="$2" invalid_file="$TMP/invalid-current-release.json"
+  reset_capture
+  jq "$filter" "$CURRENT_RELEASE_FILE" >"$invalid_file"
+  mv "$invalid_file" "$CURRENT_RELEASE_FILE"
+  if run_helper "$HELPER" "$MANIFEST" "$FIXTURE_RELEASE_ID" "$FIXTURE_RELEASE_ID" "$SOURCE_SHA" "$CURRENT_RELEASE_FILE" published >"$TMP/run-output" 2>&1; then
+    die "$label unexpectedly succeeded"
+  fi
+  [[ ! -s "$CALLS_FILE" ]] || die "$label minted or sent a request"
+  grep -Fq 'current release record is invalid or does not match expected identity' "$TMP/run-output" || die "$label did not fail closed"
+  pass "$label fails before mint or send"
+}
+
+expect_current_release_noop "current prerelease" false true
+expect_current_release_noop "current draft" true false
+expect_invalid_current_release "mismatched current release ID" '.id = 43'
+expect_invalid_current_release "mismatched current release tag" '.tag_name = "v9.9.9"'
+expect_invalid_current_release "nonobject current release" '[.]'
+expect_invalid_current_release "zero current release ID" '.id = 0'
+expect_invalid_current_release "missing current release body" 'del(.body)'
+expect_invalid_current_release "nonstring current release body" '.body = {}'
+expect_invalid_current_release "nonboolean current release draft" '.draft = "false"'
+expect_invalid_current_release "nonboolean current release prerelease" '.prerelease = 0'
+expect_invalid_current_release "multiple current release records" '., .'
+
+reset_capture
+json_code_marker="$TMP/current-release-code-ran"
+json_code_bullet="\$(touch $json_code_marker)"
+write_current_release "$FIXTURE_RELEASE_ID" "$FIXTURE_TAG" "## Highlights
+- $json_code_bullet" false false
+if ! run_helper "$HELPER" "$MANIFEST" "$FIXTURE_RELEASE_ID" "$FIXTURE_RELEASE_ID" "$SOURCE_SHA" "$CURRENT_RELEASE_FILE" published >"$TMP/run-output" 2>&1; then
+  command cat "$TMP/run-output" >&2
+  die "current release code-like notes fixture"
+fi
+assert_one_bound_request '["notesSummary","operation","releaseId","repository"]'
+[[ ! -e "$json_code_marker" ]] || die "executable code came from current release JSON"
+jq -e --arg notes "$json_code_bullet" '.notesSummary == $notes' "$BODY_FILE" >/dev/null || die "code-like current notes were not inert data"
+pass "current release JSON remains inert data and cannot change endpoint or audience"
+
 expect_soft_no_http() {
   local label="$1" manifest="$2" latest_id="$3"
   reset_capture
-  if ! run_helper "$HELPER" "$manifest" "$FIXTURE_RELEASE_ID" "$latest_id" "$SOURCE_SHA" "$VALID_NOTES" >"$TMP/run-output" 2>&1; then
+  if ! run_helper "$HELPER" "$manifest" "$FIXTURE_RELEASE_ID" "$latest_id" "$SOURCE_SHA" "$CURRENT_RELEASE_FILE" published >"$TMP/run-output" 2>&1; then
     command cat "$TMP/run-output" >&2
     die "$label"
   fi
@@ -840,7 +1082,7 @@ expect_soft_no_http "card on a nonmatching tuple" "$TMP/mismatch-card.json" "$FI
 expect_soft_no_http "non-latest stable release" "$MANIFEST" 43
 
 reset_capture
-if run_helper "$HELPER" "$MANIFEST" "$FIXTURE_RELEASE_ID" "$FIXTURE_RELEASE_ID" '0000000000000000000000000000000000000000' "$VALID_NOTES" >"$TMP/run-output" 2>&1; then
+if run_helper "$HELPER" "$MANIFEST" "$FIXTURE_RELEASE_ID" "$FIXTURE_RELEASE_ID" '0000000000000000000000000000000000000000' "$CURRENT_RELEASE_FILE" published >"$TMP/run-output" 2>&1; then
   die "tag/source SHA mismatch unexpectedly succeeded"
 fi
 [[ ! -s "$CALLS_FILE" ]] || die "tag/source SHA mismatch minted or sent a request"
@@ -853,7 +1095,7 @@ replace_once "$HELPER" "$body_mutant" \
 chmod +x "$body_mutant"
 expect_contract_reject "post-mint body substitution" "$WORKFLOW" "$body_mutant"
 reset_capture
-if run_helper "$body_mutant" "$MANIFEST" "$FIXTURE_RELEASE_ID" "$FIXTURE_RELEASE_ID" "$SOURCE_SHA" "$VALID_NOTES" >"$TMP/run-output" 2>&1; then
+if run_helper "$body_mutant" "$MANIFEST" "$FIXTURE_RELEASE_ID" "$FIXTURE_RELEASE_ID" "$SOURCE_SHA" "$CURRENT_RELEASE_FILE" published >"$TMP/run-output" 2>&1; then
   die "post-mint body mutation unexpectedly succeeded"
 fi
 mapfile -t mutation_calls <"$CALLS_FILE"

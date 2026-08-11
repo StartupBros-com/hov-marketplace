@@ -23,7 +23,11 @@ fail() {
 }
 
 readonly TOOL_RELEASES_ENDPOINT='https://members.startupbros.com/api/internal/ops/tool-releases'
+# Six current caller repositories, one inherited same-release lease, and one
+# spare bounded window can all clear without turning a transient queue into loss.
+readonly ANNOUNCE_MAX_ATTEMPTS=8
 readonly RETRY_LEASE_EXPIRY_CUSHION_SECONDS=2
+readonly RETRY_JITTER_MAX_SECONDS=3
 readonly RESPONSE_CONTEXT_MAX_BYTES=2048
 
 ANNOUNCE_RESPONSE_DIR=''
@@ -45,12 +49,51 @@ is_positive_uint() {
   [[ "$1" =~ ^[1-9][0-9]*$ ]]
 }
 
+load_current_release() {
+  require CURRENT_RELEASE_FILE
+  local current_release
+
+  if ! current_release="$(jq -ces \
+    --arg expected_id "$RELEASE_ID" \
+    --arg expected_tag "$RELEASE_TAG" \
+    '
+      if length == 1 and
+        (.[0] |
+          type == "object" and
+          has("id") and
+          (.id | type == "number") and
+          (.id > 0) and
+          (.id == (.id | floor)) and
+          ((.id | tostring) == $expected_id) and
+          has("tag_name") and
+          (.tag_name | type == "string") and
+          (.tag_name | length > 0) and
+          (.tag_name == $expected_tag) and
+          has("body") and
+          (.body == null or (.body | type == "string")) and
+          has("draft") and
+          (.draft | type == "boolean") and
+          has("prerelease") and
+          (.prerelease | type == "boolean"))
+      then .[0]
+      else error("current release record failed validation")
+      end
+    ' -- "$CURRENT_RELEASE_FILE")"; then
+    fail "current release record is invalid or does not match expected identity"
+  fi
+
+  CURRENT_RELEASE_NOTES="$(jq -jr 'if .body == null then "" else .body end' <<<"$current_release")"
+  CURRENT_RELEASE_DRAFT="$(jq -r '.draft' <<<"$current_release")"
+  CURRENT_RELEASE_PRERELEASE="$(jq -r '.prerelease' <<<"$current_release")"
+  readonly CURRENT_RELEASE_NOTES CURRENT_RELEASE_DRAFT CURRENT_RELEASE_PRERELEASE
+}
+
 notes_summary() {
   # Card-ready release bullets. Preference order: author-written "## Highlights"
   # section; GitHub's auto "What's Changed" bullets, cleaned; first paragraph.
   # Up to 3 bullets, each <=180 chars, total <=600.
   local notes bullets
-  notes="$(printf '%s' "${RELEASE_NOTES:-}" | tr -d '\r')"
+  notes="$(printf '%s' "${CURRENT_RELEASE_NOTES:-}" | tr -d '\r')"
   [[ -n "$notes" ]] || return 0
   bullets="$(printf '%s\n' "$notes" | sed -n '/^##[[:space:]]*Highlights/,/^## /p' | grep -E '^[*•-][[:space:]]' || true)"
   if [[ -z "$bullets" ]]; then
@@ -90,6 +133,13 @@ sha256_bytes() {
   printf '%s\n' "$digest"
 }
 
+retry_jitter_seconds() {
+  local -r jitter_repository="$1" jitter_release_id="$2" jitter_attempt="$3"
+  local digest
+  digest="$(sha256_bytes "$jitter_repository:$jitter_release_id:$jitter_attempt")"
+  printf '%d\n' "$((16#${digest:0:8} % (RETRY_JITTER_MAX_SECONDS + 1)))"
+}
+
 mint_oidc_token() {
   local -r audience="$1"
   require ACTIONS_ID_TOKEN_REQUEST_URL
@@ -122,9 +172,11 @@ report_response_context() {
 }
 
 retry_after_seconds() {
-  local -r response_headers="$1"
+  local -r response_headers="$1" expected_status="$2"
   local line value final_status='' in_header_block=false saw_folded_line=false
   local -a values=()
+
+  [[ "$expected_status" == 409 || "$expected_status" == 429 ]] || return 1
 
   while IFS= read -r line || [[ -n "$line" ]]; do
     line="${line%$'\r'}"
@@ -151,7 +203,7 @@ retry_after_seconds() {
     fi
   done <"$response_headers"
 
-  [[ "$final_status" == 429 ]] || return 1
+  [[ "$final_status" == "$expected_status" ]] || return 1
   [[ "$saw_folded_line" == false ]] || return 1
   [[ ${#values[@]} -eq 1 ]] || return 1
   [[ "${values[0]}" =~ ^([1-9]|[1-9][0-9]|[1-5][0-9][0-9]|600)$ ]] || return 1
@@ -191,7 +243,7 @@ send_request() {
 
 announce() {
   local notes request_body request_sha audience oidc_token
-  local response_body response_headers http_status retry_after retry_delay
+  local response_body response_headers http_status retry_after retry_delay retry_jitter
   local attempt result=1
   notes="$(notes_summary)"
   request_body="$(jq -cn \
@@ -210,7 +262,7 @@ announce() {
   response_headers="$ANNOUNCE_RESPONSE_DIR/response-headers"
   trap cleanup_response_dir EXIT
 
-  for attempt in 1 2; do
+  for ((attempt = 1; attempt <= ANNOUNCE_MAX_ATTEMPTS; attempt += 1)); do
     http_status=''
     if ! oidc_token="$(mint_oidc_token "$audience")"; then
       fail "could not mint OIDC token"
@@ -226,20 +278,21 @@ announce() {
       result=0
       break
     fi
-    if [[ "$http_status" != 429 ]]; then
+    if [[ "$http_status" != 409 && "$http_status" != 429 ]]; then
       report_response_context "Tool Drop POST failed with HTTP $http_status" "$response_body"
       break
     fi
-    if ((attempt == 2)); then
-      report_response_context "Tool Drop POST remained HTTP 429 after one retry" "$response_body"
+    if ! retry_after="$(retry_after_seconds "$response_headers" "$http_status")"; then
+      report_response_context "HTTP $http_status lacked one canonical Retry-After value from 1 through 600" "$response_body"
       break
     fi
-    if ! retry_after="$(retry_after_seconds "$response_headers")"; then
-      report_response_context "HTTP 429 lacked one canonical Retry-After value from 1 through 600" "$response_body"
+    if ((attempt == ANNOUNCE_MAX_ATTEMPTS)); then
+      report_response_context "Tool Drop POST exhausted $ANNOUNCE_MAX_ATTEMPTS attempts (last HTTP $http_status)" "$response_body"
       break
     fi
 
-    retry_delay=$((10#$retry_after + RETRY_LEASE_EXPIRY_CUSHION_SECONDS))
+    retry_jitter="$(retry_jitter_seconds "$REPOSITORY" "$RELEASE_ID" "$attempt")"
+    retry_delay=$((10#$retry_after + RETRY_LEASE_EXPIRY_CUSHION_SECONDS + retry_jitter))
     sleep "$retry_delay"
   done
 
@@ -294,7 +347,8 @@ main() {
   is_positive_uint "$RELEASE_ID" || fail "RELEASE_ID must be a positive canonical decimal integer"
   [[ "$REPOSITORY" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] || fail "REPOSITORY has an invalid shape"
 
-  if [[ "${RELEASE_PRERELEASE:-false}" == true || "${RELEASE_DRAFT:-false}" == true ]]; then
+  load_current_release
+  if [[ "$CURRENT_RELEASE_PRERELEASE" == true || "$CURRENT_RELEASE_DRAFT" == true ]]; then
     printf 'prerelease or draft release ignored\n'
     return
   fi
