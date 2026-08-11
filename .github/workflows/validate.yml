@@ -29,6 +29,8 @@ jobs:
         run: ./tests/validate-marketplace.test.sh
       - name: Run announce retry tests
         run: bash ./tests/tool-drop-announce-retry.test.sh
+      - name: Run notes-summary tests
+        run: bash ./tests/notes-summary.test.sh
 
   public-pr-syntax:
     name: Public PR data check

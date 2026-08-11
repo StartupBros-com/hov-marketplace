@@ -63,6 +63,11 @@ for line in sys.stdin.read().splitlines():
 print("\n".join(out)[:600])'
     return 0
   fi
+  # Prose fallback: the drop card gets an excerpt instead of a what's-new list.
+  # Warn loudly — a card that silently degrades reads as "this release had
+  # nothing to say" (5 of 8 plugins' latest releases hit this path, 2026-08-11).
+  printf '::warning title=No release highlights::%s %s has no "## Highlights" bullets; the drop card falls back to a prose excerpt. See docs/plugin-release-recipe.md.\n' \
+    "${REPOSITORY:-plugin}" "${RELEASE_TAG:-release}" >&2
   printf '%s' "$notes" | awk 'BEGIN{RS=""} NR==1' | tr '\n' ' ' | cut -c1-600
 }
 
