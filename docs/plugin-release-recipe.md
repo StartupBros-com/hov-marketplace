@@ -19,8 +19,18 @@ dissolves the race: a draft release has an id but fires no announce.
    (from the draft), `releaseTag` = `vX.Y.Z`. Merge it, validator green.
 4. Publish the draft (`gh release edit vX.Y.Z --draft=false`). The single
    publish-event announce finds the card current — no re-fire needed.
-5. Verify the #tool-drops message by its timestamp, not the workflow's
-   conclusion (a not-listed skip also reports success).
+5. Verify the `#tool-drops` message from the exact run log, not the workflow's
+   conclusion (a not-listed skip also reports success):
+
+   ```bash
+   gh run view <run-id> --repo StartupBros-com/<plugin> --log \
+     | grep -E '"status":"announced"|does not yet list'
+   ```
+
+   `{"status":"announced","messageId":"…"}` is the terminal proof. A
+   `does not yet list` notice means no post happened, even when GitHub paints
+   the run green. Repeated edits may return the same message ID because the
+   service updates the existing card instead of posting a duplicate.
 
 ## Release notes: lead with `## Highlights`
 
