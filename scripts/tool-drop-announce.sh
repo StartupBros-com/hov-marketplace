@@ -23,6 +23,18 @@ fail() {
 }
 
 readonly TOOL_RELEASES_ENDPOINT='https://members.startupbros.com/api/internal/ops/tool-releases'
+readonly RETRY_LEASE_EXPIRY_CUSHION_SECONDS=2
+readonly RESPONSE_CONTEXT_MAX_BYTES=2048
+
+ANNOUNCE_RESPONSE_DIR=''
+
+cleanup_response_dir() {
+  local -r response_dir="${ANNOUNCE_RESPONSE_DIR:-}"
+  [[ -n "$response_dir" ]] || return 0
+  rm -f -- "$response_dir/response-body" "$response_dir/response-headers"
+  rmdir -- "$response_dir"
+  ANNOUNCE_RESPONSE_DIR=''
+}
 
 require() {
   local name="$1"
@@ -82,29 +94,105 @@ mint_oidc_token() {
   local -r audience="$1"
   require ACTIONS_ID_TOKEN_REQUEST_URL
   require ACTIONS_ID_TOKEN_REQUEST_TOKEN
-  curl --fail-with-body --silent --show-error --get \
+  curl --disable --fail-with-body --silent --show-error --get \
     -H "authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
     --data-urlencode "audience=$audience" \
     "$ACTIONS_ID_TOKEN_REQUEST_URL" \
     | jq -er '.value | select(type == "string" and length > 0)'
 }
 
+report_response_context() {
+  local -r message="$1" response_body="$2"
+  local body_size
+  printf 'error: %s\n' "$message" >&2
+  if [[ ! -s "$response_body" ]]; then
+    printf 'response body: <empty>\n' >&2
+    return
+  fi
+
+  body_size="$(wc -c <"$response_body")"
+  body_size="${body_size//[[:space:]]/}"
+  printf 'response body (first %d bytes):\n' "$RESPONSE_CONTEXT_MAX_BYTES" >&2
+  head -c "$RESPONSE_CONTEXT_MAX_BYTES" "$response_body" >&2
+  if ((body_size > RESPONSE_CONTEXT_MAX_BYTES)); then
+    printf '\n... response body truncated ...\n' >&2
+  else
+    printf '\n' >&2
+  fi
+}
+
+retry_after_seconds() {
+  local -r response_headers="$1"
+  local line value final_status='' in_header_block=false saw_folded_line=false
+  local -a values=()
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"
+    if [[ "$line" =~ ^HTTP/[0-9]+(\.[0-9]+)?[[:blank:]]+([0-9][0-9][0-9])([[:blank:]].*)?$ ]]; then
+      final_status="${BASH_REMATCH[2]}"
+      values=()
+      in_header_block=true
+      saw_folded_line=false
+      continue
+    fi
+    if [[ -z "$line" ]]; then
+      in_header_block=false
+      continue
+    fi
+    if [[ "$in_header_block" == true && "$line" == [[:blank:]]* ]]; then
+      saw_folded_line=true
+      continue
+    fi
+    if [[ "$in_header_block" == true && "${line,,}" == retry-after:* ]]; then
+      value="${line#*:}"
+      value="${value#"${value%%[![:blank:]]*}"}"
+      value="${value%"${value##*[![:blank:]]}"}"
+      values+=("$value")
+    fi
+  done <"$response_headers"
+
+  [[ "$final_status" == 429 ]] || return 1
+  [[ "$saw_folded_line" == false ]] || return 1
+  [[ ${#values[@]} -eq 1 ]] || return 1
+  [[ "${values[0]}" =~ ^([1-9]|[1-9][0-9]|[1-5][0-9][0-9]|600)$ ]] || return 1
+  printf '%s\n' "${values[0]}"
+}
+
 send_request() {
   local -r request_body="$1" expected_sha="$2" oidc_token="$3"
-  local actual_sha
+  local -r response_body="$4" response_headers="$5" http_status_name="$6"
+  local actual_sha curl_http_code curl_exit=0
+
+  : >"$response_body"
+  : >"$response_headers"
   actual_sha="$(sha256_bytes "$request_body")"
   [[ "$actual_sha" == "$expected_sha" ]] || fail "request body changed after OIDC mint"
 
-  curl --fail-with-body --silent --show-error \
+  curl_http_code="$(curl --disable --silent --show-error \
     --request POST \
     -H 'content-type: application/json' \
     -H "authorization: Bearer $oidc_token" \
     --data-binary "$request_body" \
-    "$TOOL_RELEASES_ENDPOINT"
+    --output "$response_body" \
+    --dump-header "$response_headers" \
+    --write-out '%{http_code}' \
+    "$TOOL_RELEASES_ENDPOINT")" || curl_exit=$?
+  printf -v "$http_status_name" '%s' "$curl_http_code"
+
+  if ((curl_exit != 0)); then
+    report_response_context "Tool Drop POST transport failure (curl exit $curl_exit)" "$response_body"
+    return 1
+  fi
+  if [[ ! "$curl_http_code" =~ ^[0-9][0-9][0-9]$ ]]; then
+    report_response_context "Tool Drop POST returned an invalid HTTP status" "$response_body"
+    return 1
+  fi
 }
 
 announce() {
   local notes request_body request_sha audience oidc_token
+  local response_body response_headers http_status retry_after retry_delay
+  local attempt result=1
   notes="$(notes_summary)"
   request_body="$(jq -cn \
     --arg operation announce \
@@ -115,9 +203,49 @@ announce() {
   readonly request_body
   request_sha="$(sha256_bytes "$request_body")"
   audience="${TOOL_RELEASES_ENDPOINT}#sha256=$request_sha"
-  oidc_token="$(mint_oidc_token "$audience")"
-  printf '::add-mask::%s\n' "$oidc_token"
-  send_request "$request_body" "$request_sha" "$oidc_token"
+  readonly request_sha audience
+
+  ANNOUNCE_RESPONSE_DIR="$(mktemp -d)" || fail "could not create response capture directory"
+  response_body="$ANNOUNCE_RESPONSE_DIR/response-body"
+  response_headers="$ANNOUNCE_RESPONSE_DIR/response-headers"
+  trap cleanup_response_dir EXIT
+
+  for attempt in 1 2; do
+    http_status=''
+    if ! oidc_token="$(mint_oidc_token "$audience")"; then
+      fail "could not mint OIDC token"
+    fi
+    printf '::add-mask::%s\n' "$oidc_token"
+    if ! send_request "$request_body" "$request_sha" "$oidc_token" \
+      "$response_body" "$response_headers" http_status; then
+      break
+    fi
+
+    if [[ "$http_status" =~ ^2[0-9][0-9]$ ]]; then
+      command cat "$response_body"
+      result=0
+      break
+    fi
+    if [[ "$http_status" != 429 ]]; then
+      report_response_context "Tool Drop POST failed with HTTP $http_status" "$response_body"
+      break
+    fi
+    if ((attempt == 2)); then
+      report_response_context "Tool Drop POST remained HTTP 429 after one retry" "$response_body"
+      break
+    fi
+    if ! retry_after="$(retry_after_seconds "$response_headers")"; then
+      report_response_context "HTTP 429 lacked one canonical Retry-After value from 1 through 600" "$response_body"
+      break
+    fi
+
+    retry_delay=$((10#$retry_after + RETRY_LEASE_EXPIRY_CUSHION_SECONDS))
+    sleep "$retry_delay"
+  done
+
+  cleanup_response_dir
+  trap - EXIT
+  return "$result"
 }
 
 verify_release() {
