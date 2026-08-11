@@ -35,7 +35,48 @@ jobs:
       contents: read
       id-token: write
     steps:
+      # Every release event reaches this step inside the immutable-release-ID
+      # concurrency group. Current API state—not stale event fields—decides
+      # whether any checkout, latest-stable lookup, or announcement may run.
+      - name: Resolve current release eligibility
+        id: current
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ github.event.release.id }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          CURRENT_RELEASE_FILE: ${{ runner.temp }}/hov-tool-drop-current-release.json
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" >"$CURRENT_RELEASE_FILE"
+          eligible="$(jq -r \
+            --arg expected_id "$RELEASE_ID" \
+            --arg expected_tag "$RELEASE_TAG" \
+            '
+              if type == "object" and
+                has("id") and
+                (.id | type == "number") and
+                (.id > 0) and
+                (.id == (.id | floor)) and
+                ((.id | tostring) == $expected_id) and
+                has("tag_name") and
+                (.tag_name | type == "string") and
+                (.tag_name == $expected_tag) and
+                has("body") and
+                (.body == null or (.body | type == "string")) and
+                has("draft") and
+                (.draft | type == "boolean") and
+                has("prerelease") and
+                (.prerelease | type == "boolean")
+              then ((.draft | not) and (.prerelease | not))
+              else error("current release record failed validation")
+              end
+            ' "$CURRENT_RELEASE_FILE")"
+          echo "eligible=$eligible" >> "$GITHUB_OUTPUT"
+          if [[ "$eligible" != true ]]; then
+            echo "::notice title=Not announced::Current release is draft or prerelease"
+          fi
+
       - name: Check out release commit
+        if: steps.current.outputs.eligible == 'true'
         uses: actions/checkout@ac593985615ec2ede58e132d2e21d2b1cbd6127c
         with:
           ref: refs/tags/${{ github.event.release.tag_name }}
@@ -46,6 +87,7 @@ jobs:
       # stays below the proof that the tag descends from the protected default
       # branch, and no executable helper code comes from the tag.
       - name: Require release commit on default branch
+        if: steps.current.outputs.eligible == 'true'
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
@@ -55,6 +97,7 @@ jobs:
           git merge-base --is-ancestor "$release_sha" "origin/$DEFAULT_BRANCH"
 
       - name: Check out trusted workflow helper
+        if: steps.current.outputs.eligible == 'true'
         uses: actions/checkout@ac593985615ec2ede58e132d2e21d2b1cbd6127c
         with:
           repository: ${{ job.workflow_repository }}
@@ -65,6 +108,7 @@ jobs:
       # This mutable checkout supplies current catalog data only. No code from
       # it is executed; the helper above is pinned to the called workflow SHA.
       - name: Check out current marketplace manifest
+        if: steps.current.outputs.eligible == 'true'
         uses: actions/checkout@ac593985615ec2ede58e132d2e21d2b1cbd6127c
         with:
           repository: StartupBros-com/hov-marketplace
@@ -72,19 +116,18 @@ jobs:
           path: marketplace-data
           persist-credentials: false
 
-      - name: Resolve current and latest stable releases
+      - name: Resolve latest stable release
+        if: steps.current.outputs.eligible == 'true'
         id: stable
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_ID: ${{ github.event.release.id }}
-          CURRENT_RELEASE_FILE: ${{ runner.temp }}/hov-tool-drop-current-release.json
         run: |
-          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" >"$CURRENT_RELEASE_FILE"
           latest_id="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .id)"
           test -n "$latest_id"
           echo "id=$latest_id" >> "$GITHUB_OUTPUT"
 
       - name: Announce release
+        if: steps.current.outputs.eligible == 'true'
         env:
           EVENT_ACTION: ${{ github.event.action }}
           REPOSITORY: ${{ github.event.repository.name }}

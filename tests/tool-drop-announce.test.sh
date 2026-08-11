@@ -34,13 +34,13 @@ done
 check_contract() {
   local workflow="$1" helper="$2"
   local input_count secret_count fixed_count disable_count
-  local release_index ancestry_index trusted_index manifest_index resolve_index announce_index
+  local current_index release_index ancestry_index trusted_index manifest_index stable_index announce_index
   local release_ref trusted_repository trusted_ref trusted_path trusted_credentials
   local manifest_repository manifest_ref manifest_path manifest_credentials
-  local ancestry_run expected_ancestry resolve_run expected_resolve announce_run expected_announce manifest_env
-  local resolve_env_count announce_env_count current_release_file
+  local current_run stable_run expected_stable ancestry_run expected_ancestry announce_run expected_announce manifest_env
+  local current_env_count stable_env_count announce_env_count current_release_file step_count gated_step_count
   local concurrency_group concurrency_cancel concurrency_cancel_tag
-  local send_block announce_block header_count mask_line send_line
+  local send_block announce_block header_count mask_line send_line utf16_width_count
   local retry_loop_line mint_line retry_loop_end_line
 
   input_count="$(yq -r '.on.workflow_call.inputs // {} | length' "$workflow")" || return 1
@@ -61,14 +61,20 @@ check_contract() {
   grep -Fxq "readonly TOOL_RELEASES_ENDPOINT='$FIXED_ENDPOINT'" "$helper" || return 1
   ! grep -Fq "$FIXED_ENDPOINT" "$workflow" || return 1
 
+  current_index="$(yq -r '.jobs.announce.steps | to_entries | .[] | select(.value.name == "Resolve current release eligibility") | .key' "$workflow")" || return 1
   release_index="$(yq -r '.jobs.announce.steps | to_entries | .[] | select(.value.name == "Check out release commit") | .key' "$workflow")" || return 1
   ancestry_index="$(yq -r '.jobs.announce.steps | to_entries | .[] | select(.value.name == "Require release commit on default branch") | .key' "$workflow")" || return 1
   trusted_index="$(yq -r '.jobs.announce.steps | to_entries | .[] | select(.value.name == "Check out trusted workflow helper") | .key' "$workflow")" || return 1
   manifest_index="$(yq -r '.jobs.announce.steps | to_entries | .[] | select(.value.name == "Check out current marketplace manifest") | .key' "$workflow")" || return 1
-  resolve_index="$(yq -r '.jobs.announce.steps | to_entries | .[] | select(.value.name == "Resolve current and latest stable releases") | .key' "$workflow")" || return 1
+  stable_index="$(yq -r '.jobs.announce.steps | to_entries | .[] | select(.value.name == "Resolve latest stable release") | .key' "$workflow")" || return 1
   announce_index="$(yq -r '.jobs.announce.steps | to_entries | .[] | select(.value.name == "Announce release") | .key' "$workflow")" || return 1
-  [[ "$release_index" =~ ^[0-9]+$ && "$ancestry_index" =~ ^[0-9]+$ && "$trusted_index" =~ ^[0-9]+$ && "$manifest_index" =~ ^[0-9]+$ && "$resolve_index" =~ ^[0-9]+$ && "$announce_index" =~ ^[0-9]+$ ]] || return 1
-  ((release_index + 1 == ancestry_index && ancestry_index < trusted_index && trusted_index < manifest_index && manifest_index < resolve_index && resolve_index < announce_index)) || return 1
+  [[ "$current_index" == 0 && "$release_index" =~ ^[0-9]+$ && "$ancestry_index" =~ ^[0-9]+$ && "$trusted_index" =~ ^[0-9]+$ && "$manifest_index" =~ ^[0-9]+$ && "$stable_index" =~ ^[0-9]+$ && "$announce_index" =~ ^[0-9]+$ ]] || return 1
+  ((current_index < release_index && release_index + 1 == ancestry_index && ancestry_index < trusted_index && trusted_index < manifest_index && manifest_index < stable_index && stable_index < announce_index)) || return 1
+
+  step_count="$(yq -r '.jobs.announce.steps | length' "$workflow")" || return 1
+  gated_step_count="$(yq -r '[.jobs.announce.steps[] | select(.name != "Resolve current release eligibility" and .["if"] == "steps.current.outputs.eligible == '\''true'\''")] | length' "$workflow")" || return 1
+  [[ "$gated_step_count" == "$((step_count - 1))" ]] || return 1
+  [[ "$(yq -r '.jobs.announce.steps[0] | has("if")' "$workflow")" == false ]] || return 1
 
   release_ref="$(yq -r '.jobs.announce.steps[] | select(.name == "Check out release commit") | .with.ref' "$workflow")" || return 1
   [[ "$release_ref" == 'refs/tags/${{ github.event.release.tag_name }}' ]] || return 1
@@ -92,17 +98,29 @@ check_contract() {
   [[ -n "$manifest_path" && "$manifest_path" != "$trusted_path" && "$manifest_credentials" == false ]] || return 1
 
   current_release_file='${{ runner.temp }}/hov-tool-drop-current-release.json'
-  resolve_env_count="$(yq -r '.jobs.announce.steps[] | select(.name == "Resolve current and latest stable releases") | .env | length' "$workflow")" || return 1
-  [[ "$resolve_env_count" == 3 ]] || return 1
-  [[ "$(yq -r '.jobs.announce.steps[] | select(.name == "Resolve current and latest stable releases") | .env.GH_TOKEN' "$workflow")" == '${{ github.token }}' ]] || return 1
-  [[ "$(yq -r '.jobs.announce.steps[] | select(.name == "Resolve current and latest stable releases") | .env.RELEASE_ID' "$workflow")" == '${{ github.event.release.id }}' ]] || return 1
-  [[ "$(yq -r '.jobs.announce.steps[] | select(.name == "Resolve current and latest stable releases") | .env.CURRENT_RELEASE_FILE' "$workflow")" == "$current_release_file" ]] || return 1
-  resolve_run="$(yq -r '.jobs.announce.steps[] | select(.name == "Resolve current and latest stable releases") | .run' "$workflow")" || return 1
-  expected_resolve=$'gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" >"$CURRENT_RELEASE_FILE"\nlatest_id="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .id)"\ntest -n "$latest_id"\necho "id=$latest_id" >> "$GITHUB_OUTPUT"'
-  [[ "$resolve_run" == "$expected_resolve" && "$resolve_run" != *'${{'* ]] || return 1
+  current_env_count="$(yq -r '.jobs.announce.steps[] | select(.name == "Resolve current release eligibility") | .env | length' "$workflow")" || return 1
+  [[ "$current_env_count" == 4 ]] || return 1
+  [[ "$(yq -r '.jobs.announce.steps[] | select(.name == "Resolve current release eligibility") | .env.GH_TOKEN' "$workflow")" == '${{ github.token }}' ]] || return 1
+  [[ "$(yq -r '.jobs.announce.steps[] | select(.name == "Resolve current release eligibility") | .env.RELEASE_ID' "$workflow")" == '${{ github.event.release.id }}' ]] || return 1
+  [[ "$(yq -r '.jobs.announce.steps[] | select(.name == "Resolve current release eligibility") | .env.RELEASE_TAG' "$workflow")" == '${{ github.event.release.tag_name }}' ]] || return 1
+  [[ "$(yq -r '.jobs.announce.steps[] | select(.name == "Resolve current release eligibility") | .env.CURRENT_RELEASE_FILE' "$workflow")" == "$current_release_file" ]] || return 1
+  current_run="$(yq -r '.jobs.announce.steps[] | select(.name == "Resolve current release eligibility") | .run' "$workflow")" || return 1
+  [[ "$current_run" == *'gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" >"$CURRENT_RELEASE_FILE"'* ]] || return 1
+  [[ "$current_run" == *'((.id | tostring) == $expected_id)'* ]] || return 1
+  [[ "$current_run" == *'(.tag_name == $expected_tag)'* ]] || return 1
+  [[ "$current_run" == *'(.body == null or (.body | type == "string"))'* ]] || return 1
+  [[ "$current_run" == *'then ((.draft | not) and (.prerelease | not))'* ]] || return 1
+  [[ "$current_run" == *'echo "eligible=$eligible" >> "$GITHUB_OUTPUT"'* ]] || return 1
+  [[ "$current_run" != *'releases/latest'* && "$current_run" != *'${{'* ]] || return 1
+
+  stable_env_count="$(yq -r '.jobs.announce.steps[] | select(.name == "Resolve latest stable release") | .env | length' "$workflow")" || return 1
+  [[ "$stable_env_count" == 1 ]] || return 1
+  [[ "$(yq -r '.jobs.announce.steps[] | select(.name == "Resolve latest stable release") | .env.GH_TOKEN' "$workflow")" == '${{ github.token }}' ]] || return 1
+  stable_run="$(yq -r '.jobs.announce.steps[] | select(.name == "Resolve latest stable release") | .run' "$workflow")" || return 1
+  expected_stable=$'latest_id="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .id)"\ntest -n "$latest_id"\necho "id=$latest_id" >> "$GITHUB_OUTPUT"'
+  [[ "$stable_run" == "$expected_stable" && "$stable_run" != *'${{'* ]] || return 1
 
   announce_run="$(yq -r '.jobs.announce.steps[] | select(.name == "Announce release") | .run' "$workflow")" || return 1
-  [[ "$(yq -r '.jobs.announce.steps[] | select(.name == "Announce release") | has("if")' "$workflow")" == false ]] || return 1
   manifest_env="$(yq -r '.jobs.announce.steps[] | select(.name == "Announce release") | .env.MARKETPLACE_MANIFEST' "$workflow")" || return 1
   announce_env_count="$(yq -r '.jobs.announce.steps[] | select(.name == "Announce release") | .env | length' "$workflow")" || return 1
   expected_announce=$'source_sha="$(git rev-list -n 1 "refs/tags/$RELEASE_TAG")"\nexport SOURCE_SHA="$source_sha"\n'
@@ -145,6 +163,11 @@ check_contract() {
   grep -Fq '(.prerelease | type == "boolean")' "$helper" || return 1
   grep -Fq 'CURRENT_RELEASE_NOTES="$(jq -jr' "$helper" || return 1
   grep -Fq 'notes="$(printf '\''%s'\'' "${CURRENT_RELEASE_NOTES:-}" | tr -d '\''\r'\'')"' "$helper" || return 1
+  utf16_width_count="$({ grep -Fo 'width = 2 if ord(char) > 0xFFFF else 1' "$helper" || true; } | wc -l)"
+  [[ "$utf16_width_count" == 2 ]] || return 1
+  grep -Fq 'out.append(utf16_prefix(line, 180))' "$helper" || return 1
+  grep -Fq 'print(utf16_prefix("\n".join(out), 600))' "$helper" || return 1
+  grep -Fq 'if used + width > 600:' "$helper" || return 1
   grep -Fq '[[ "$EVENT_ACTION" == published || "$EVENT_ACTION" == edited ]] || fail "unsupported release action: $EVENT_ACTION"' "$helper" || return 1
   ! grep -Eq '(^|[[:space:]])(eval|source)[[:space:]].*CURRENT_RELEASE' "$helper" || return 1
   ! grep -Fq -- '--location' "$helper" || return 1
@@ -258,10 +281,22 @@ replace_once "$WORKFLOW" "$mutant" \
   'gh api "repos/$GITHUB_REPOSITORY/releases/latest" >"$CURRENT_RELEASE_FILE"'
 expect_contract_reject "current release fetch weakened to latest" "$mutant" "$HELPER"
 
+mutant="$TMP/workflow-force-current-eligible.yml"
+replace_once "$WORKFLOW" "$mutant" \
+  'then ((.draft | not) and (.prerelease | not))' \
+  'then true'
+expect_contract_reject "draft and prerelease eligibility bypass" "$mutant" "$HELPER"
+
+mutant="$TMP/workflow-unguarded-latest-stable.yml"
+replace_once "$WORKFLOW" "$mutant" \
+  $'      - name: Resolve latest stable release\n        if: steps.current.outputs.eligible == '\''true'\''' \
+  $'      - name: Resolve latest stable release'
+expect_contract_reject "latest stable lookup before eligibility" "$mutant" "$HELPER"
+
 mutant="$TMP/workflow-stale-event-body.yml"
 replace_once "$WORKFLOW" "$mutant" \
-  $'          RELEASE_ID: ${{ github.event.release.id }}\n          RELEASE_TAG: ${{ github.event.release.tag_name }}\n          CURRENT_RELEASE_FILE: ${{ runner.temp }}/hov-tool-drop-current-release.json\n' \
-  $'          RELEASE_ID: ${{ github.event.release.id }}\n          RELEASE_TAG: ${{ github.event.release.tag_name }}\n          RELEASE_NOTES: ${{ github.event.release.body }}\n          CURRENT_RELEASE_FILE: ${{ runner.temp }}/hov-tool-drop-current-release.json\n'
+  $'          REPOSITORY: ${{ github.event.repository.name }}\n          RELEASE_ID: ${{ github.event.release.id }}\n' \
+  $'          REPOSITORY: ${{ github.event.repository.name }}\n          RELEASE_ID: ${{ github.event.release.id }}\n          RELEASE_NOTES: ${{ github.event.release.body }}\n'
 expect_contract_reject "stale event body authority" "$mutant" "$HELPER"
 
 mutant="$TMP/workflow-missing-helper-current-file.yml"
@@ -271,8 +306,9 @@ replace_once "$WORKFLOW" "$mutant" \
 expect_contract_reject "current release file not passed to helper" "$mutant" "$HELPER"
 
 mutant="$TMP/workflow-published-only-announce-step.yml"
-replace_once "$WORKFLOW" "$mutant" $'      - name: Announce release\n        env:' \
-  $'      - name: Announce release\n        if: github.event.action == '\''published'\''\n        env:'
+replace_once "$WORKFLOW" "$mutant" \
+  $'      - name: Announce release\n        if: steps.current.outputs.eligible == '\''true'\''' \
+  $'      - name: Announce release\n        if: steps.current.outputs.eligible == '\''true'\'' && github.event.action == '\''published'\'''
 expect_contract_reject "published-only announce step" "$mutant" "$HELPER"
 
 mutant="$TMP/workflow-mutable-ref.yml"
@@ -290,57 +326,58 @@ expect_contract_reject "mutable-main helper execution" "$mutant" "$HELPER"
 mutant="$TMP/helper-caller-url.sh"
 replace_once "$HELPER" "$mutant" "readonly TOOL_RELEASES_ENDPOINT='$FIXED_ENDPOINT'" 'readonly TOOL_RELEASES_ENDPOINT="${ANNOUNCE_URL:?}"'
 expect_contract_reject "caller-controlled helper endpoint" "$WORKFLOW" "$mutant"
-
 mutant="$TMP/helper-secret-header.sh"
 replace_once "$HELPER" "$mutant" "-H 'content-type: application/json'" "-H 'x-tool-release-announce-secret: fixture'"
 expect_contract_reject "secret header" "$WORKFLOW" "$mutant"
-
 mutant="$TMP/helper-generic-audience.sh"
 replace_once "$HELPER" "$mutant" 'audience="${TOOL_RELEASES_ENDPOINT}#sha256=$request_sha"' 'audience="$TOOL_RELEASES_ENDPOINT"'
 expect_contract_reject "generic OIDC audience" "$WORKFLOW" "$mutant"
-
 mutant="$TMP/helper-omitted-release-id.sh"
 replace_once "$HELPER" "$mutant" \
   '{operation: $operation, repository: $repository, releaseId: $releaseId} + (if $notesSummary == "" then {} else {notesSummary: $notesSummary} end)' \
   '{operation: $operation, repository: $repository} + (if $notesSummary == "" then {} else {notesSummary: $notesSummary} end)'
 expect_contract_reject "omitted release ID body field" "$WORKFLOW" "$mutant"
-
 mutant="$TMP/helper-numeric-release-id.sh"
 replace_once "$HELPER" "$mutant" '--arg releaseId "$RELEASE_ID"' '--argjson releaseId "$RELEASE_ID"'
 expect_contract_reject "numeric release ID body field" "$WORKFLOW" "$mutant"
-
 mutant="$TMP/helper-zero-release-id.sh"
 replace_once "$HELPER" "$mutant" '[[ "$1" =~ ^[1-9][0-9]*$ ]]' '[[ "$1" =~ ^(0|[1-9][0-9]*)$ ]]'
 expect_contract_reject "zero-permitting release ID validation" "$WORKFLOW" "$mutant"
-
 mutant="$TMP/helper-current-id-mismatch-accepted.sh"
 replace_once "$HELPER" "$mutant" \
   '((.id | tostring) == $expected_id)' \
   '((.id | tostring) != $expected_id)'
 expect_contract_reject "current release ID match removed" "$WORKFLOW" "$mutant"
-
 mutant="$TMP/helper-stale-event-notes.sh"
 replace_once "$HELPER" "$mutant" \
   'notes="$(printf '\''%s'\'' "${CURRENT_RELEASE_NOTES:-}" | tr -d '\''\r'\'')"' \
   'notes="$(printf '\''%s'\'' "${RELEASE_NOTES:-}" | tr -d '\''\r'\'')"'
 expect_contract_reject "stale event notes restored" "$WORKFLOW" "$mutant"
-
+mutant="$TMP/helper-codepoint-only-limit.sh"
+python3 - "$HELPER" "$mutant" <<'PY'
+from pathlib import Path
+import sys
+source, destination = map(Path, sys.argv[1:])
+text = source.read_text()
+old = "width = 2 if ord(char) > 0xFFFF else 1"
+if text.count(old) != 2:
+    raise SystemExit("expected both UTF-16 width guards")
+destination.write_text(text.replace(old, "width = 1"))
+PY
+expect_contract_reject "code-point-only notes limit" "$WORKFLOW" "$mutant"
 mutant="$TMP/helper-published-only.sh"
 replace_once "$HELPER" "$mutant" \
   '[[ "$EVENT_ACTION" == published || "$EVENT_ACTION" == edited ]] || fail "unsupported release action: $EVENT_ACTION"' \
   '[[ "$EVENT_ACTION" == published ]] || fail "unsupported release action: $EVENT_ACTION"'
 expect_contract_reject "edited release action removed" "$WORKFLOW" "$mutant"
-
 mutant="$TMP/helper-mutable-send-body.sh"
 replace_once "$HELPER" "$mutant" \
   'local -r request_body="$1" expected_sha="$2" oidc_token="$3"' \
   'local request_body="$1" expected_sha="$2" oidc_token="$3"'
 expect_contract_reject "mutable send body" "$WORKFLOW" "$mutant"
-
 mutant="$TMP/helper-post-check-body.sh"
 replace_once "$HELPER" "$mutant" '--data-binary "$request_body"' '--data-binary "${request_body}x"'
 expect_contract_reject "body alteration after digest guard" "$WORKFLOW" "$mutant"
-
 mutant="$TMP/helper-mask-order.sh"
 mask_statement="    printf '::add-mask::%s\\n' \"\$oidc_token\""
 send_statement=$'    if ! send_request "$request_body" "$request_sha" "$oidc_token" \\\n      "$response_body" "$response_headers" http_status; then\n      break\n    fi'
@@ -348,53 +385,79 @@ replace_once "$HELPER" "$mutant" \
   "$mask_statement"$'\n'"$send_statement" \
   "$send_statement"$'\n'"$mask_statement"
 expect_contract_reject "token mask ordering" "$WORKFLOW" "$mutant"
-
 mutant="$TMP/helper-stale-retry-token.sh"
 fresh_mint_block=$'  for ((attempt = 1; attempt <= ANNOUNCE_MAX_ATTEMPTS; attempt += 1)); do\n    http_status=\'\'\n    if ! oidc_token="$(mint_oidc_token "$audience")"; then\n      fail "could not mint OIDC token"\n    fi'
 stale_mint_block=$'  if ! oidc_token="$(mint_oidc_token "$audience")"; then\n    fail "could not mint OIDC token"\n  fi\n  for ((attempt = 1; attempt <= ANNOUNCE_MAX_ATTEMPTS; attempt += 1)); do\n    http_status=\'\''
 replace_once "$HELPER" "$mutant" "$fresh_mint_block" "$stale_mint_block"
 expect_contract_reject "OIDC mint outside retry loop" "$WORKFLOW" "$mutant"
-
 mutant="$TMP/helper-unbounded-retry.sh"
 replace_once "$HELPER" "$mutant" \
   'for ((attempt = 1; attempt <= ANNOUNCE_MAX_ATTEMPTS; attempt += 1)); do' \
   'while true; do'
 expect_contract_reject "unbounded retry loop" "$WORKFLOW" "$mutant"
-
 mutant="$TMP/helper-wider-attempt-budget.sh"
 replace_once "$HELPER" "$mutant" 'readonly ANNOUNCE_MAX_ATTEMPTS=8' 'readonly ANNOUNCE_MAX_ATTEMPTS=9'
 expect_contract_reject "widened retry attempt budget" "$WORKFLOW" "$mutant"
-
 mutant="$TMP/helper-incomplete-jitter-key.sh"
 replace_once "$HELPER" "$mutant" \
   'sha256_bytes "$jitter_repository:$jitter_release_id:$jitter_attempt"' \
   'sha256_bytes "$jitter_repository:$jitter_release_id"'
 expect_contract_reject "incomplete retry jitter key" "$WORKFLOW" "$mutant"
-
 mutant="$TMP/helper-wide-retry-after.sh"
 replace_once "$HELPER" "$mutant" \
   '^([1-9]|[1-9][0-9]|[1-5][0-9][0-9]|600)$' \
   '^[1-9][0-9]*$'
 expect_contract_reject "widened Retry-After validation" "$WORKFLOW" "$mutant"
-
 mutant="$TMP/helper-wide-retry-status.sh"
 replace_once "$HELPER" "$mutant" \
   'if [[ "$http_status" != 409 && "$http_status" != 429 ]]; then' \
   'if [[ "$http_status" != 409 && "$http_status" != 429 && "$http_status" != 503 ]]; then'
 expect_contract_reject "widened retry status set" "$WORKFLOW" "$mutant"
-
 mutant="$TMP/helper-raw-retry-sleep.sh"
 raw_header_parse='retry_after="$(sed -n "s/^Retry-After: //p" "$response_headers")"'
 replace_once "$HELPER" "$mutant" \
   'retry_after="$(retry_after_seconds "$response_headers" "$http_status")"' \
   "$raw_header_parse"
 expect_contract_reject "raw Retry-After sleep" "$WORKFLOW" "$mutant"
-
 mutant="$TMP/helper-ambient-curl-config.sh"
 replace_once "$HELPER" "$mutant" \
   'curl --disable --silent --show-error' \
   'curl --silent --show-error'
 expect_contract_reject "ambient curl configuration" "$WORKFLOW" "$mutant"
+
+WORKFLOW_PROBE_BIN="$TMP/workflow-bin"
+WORKFLOW_PROBE_CALLS="$TMP/workflow-gh-calls"
+WORKFLOW_PROBE_OUTPUT="$TMP/workflow-output"
+WORKFLOW_PROBE_RELEASE="$TMP/workflow-current-release.json"
+mkdir -p "$WORKFLOW_PROBE_BIN"
+cat >"$WORKFLOW_PROBE_BIN/gh" <<'FAKE_GH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$WORKFLOW_PROBE_CALLS"
+[[ "$*" == "api repos/fixture-owner/fixture-tool/releases/42" ]] || exit 120
+printf '%s\n' '{"id":42,"tag_name":"v1.2.3","body":"prerelease notes","draft":false,"prerelease":true}'
+FAKE_GH
+chmod +x "$WORKFLOW_PROBE_BIN/gh"
+: >"$WORKFLOW_PROBE_CALLS"
+: >"$WORKFLOW_PROBE_OUTPUT"
+workflow_current_run="$(yq -r '.jobs.announce.steps[] | select(.name == "Resolve current release eligibility") | .run' "$WORKFLOW")"
+if ! env \
+  PATH="$WORKFLOW_PROBE_BIN:$PATH" \
+  GH_TOKEN=fixture-token \
+  GITHUB_REPOSITORY=fixture-owner/fixture-tool \
+  GITHUB_OUTPUT="$WORKFLOW_PROBE_OUTPUT" \
+  RELEASE_ID=42 \
+  RELEASE_TAG=v1.2.3 \
+  CURRENT_RELEASE_FILE="$WORKFLOW_PROBE_RELEASE" \
+  WORKFLOW_PROBE_CALLS="$WORKFLOW_PROBE_CALLS" \
+  bash -c "$workflow_current_run" >"$TMP/workflow-probe-log" 2>&1; then
+  command cat "$TMP/workflow-probe-log" >&2
+  die "prerelease eligibility workflow probe"
+fi
+[[ "$(<"$WORKFLOW_PROBE_OUTPUT")" == 'eligible=false' ]] || die "prerelease eligibility did not emit false"
+[[ "$(<"$WORKFLOW_PROBE_CALLS")" == 'api repos/fixture-owner/fixture-tool/releases/42' ]] || die "prerelease eligibility touched latest stable or another release"
+grep -Fq 'Current release is draft or prerelease' "$TMP/workflow-probe-log" || die "prerelease eligibility did not report its soft no-op"
+pass "prerelease-only repository resolves in current-state step without latest-stable lookup"
 
 FIXTURE_REPOSITORY='fixture-tool'
 FIXTURE_VERSION='1.2.3'
@@ -441,9 +504,7 @@ jq -n \
 cat >"$FAKE_BIN/curl" <<'FAKE_CURL'
 #!/usr/bin/env bash
 set -euo pipefail
-
 [[ "${1:-}" == --disable ]] || exit 89
-
 headers=()
 request_body=''
 audience_option=''
@@ -454,7 +515,6 @@ fail_with_body=false
 output_file=''
 dump_header_file=''
 write_out=''
-
 while (($# > 0)); do
   case "$1" in
     --disable)
@@ -781,8 +841,27 @@ if ! run_helper "$HELPER" "$MANIFEST" "$FIXTURE_RELEASE_ID" "$FIXTURE_RELEASE_ID
   die "bounded notes fixture"
 fi
 assert_one_bound_request '["notesSummary","operation","releaseId","repository"]'
-jq -e '.notesSummary | length == 600' "$BODY_FILE" >/dev/null || die "notesSummary was not bounded to 600 characters"
+jq -e '.notesSummary | length == 600' "$BODY_FILE" >/dev/null || die "notesSummary was not bounded to 600 BMP characters"
 pass "notesSummary is character-safe and bounded"
+
+ASTRAL_NOTES="$(python3 -c 'print("😀" * 301, end="")')"
+reset_capture
+write_current_release "$FIXTURE_RELEASE_ID" "$FIXTURE_TAG" "$ASTRAL_NOTES" false false
+if ! run_helper "$HELPER" "$MANIFEST" "$FIXTURE_RELEASE_ID" "$FIXTURE_RELEASE_ID" "$SOURCE_SHA" "$CURRENT_RELEASE_FILE" published >"$TMP/run-output" 2>&1; then
+  command cat "$TMP/run-output" >&2
+  die "UTF-16 bounded astral notes fixture"
+fi
+assert_one_bound_request '["notesSummary","operation","releaseId","repository"]'
+python3 - "$BODY_FILE" <<'PY' || die "astral notes exceeded the endpoint UTF-16 limit"
+import json
+from pathlib import Path
+import sys
+
+notes = json.loads(Path(sys.argv[1]).read_text())["notesSummary"]
+assert len(notes) == 300
+assert len(notes.encode("utf-16-le")) // 2 == 600
+PY
+pass "astral notes are bounded to the endpoint's 600 UTF-16 units"
 
 plan_response() {
   local attempt="$1" status="$2" retry_after="${3:-}"

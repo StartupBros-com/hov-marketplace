@@ -109,20 +109,42 @@ notes_summary() {
     printf '%s\n' "$bullets" \
       | sed -E 's/^[*•-][[:space:]]+//; s/[[:space:]]+by @[A-Za-z0-9_[:punct:]]+ in http[^[:space:]]*[[:space:]]*$//; s/^(feat|fix|perf|chore|docs|refactor|test|ci|build)(\([^)]*\))?!?:[[:space:]]*//; s/[[:space:]]*\(v[0-9]+\.[0-9]+\.[0-9]+\)[[:space:]]*$//' \
       | python3 -c 'import sys
+
+def utf16_prefix(value, limit):
+    used = 0
+    out = []
+    for char in value:
+        width = 2 if ord(char) > 0xFFFF else 1
+        if used + width > limit:
+            break
+        out.append(char)
+        used += width
+    return "".join(out)
+
 out = []
 for line in sys.stdin.read().splitlines():
     line = line.strip()
     if line:
-        out.append(line[:180])
+        out.append(utf16_prefix(line, 180))
     if len(out) == 3:
         break
-print("\n".join(out)[:600])'
+print(utf16_prefix("\n".join(out), 600))'
     return 0
   fi
   printf '%s' "$notes" \
     | awk 'BEGIN{RS=""} NR==1' \
     | tr '\n' ' ' \
-    | python3 -c 'import sys; print(sys.stdin.read()[:600], end="")'
+    | python3 -c 'import sys
+value = sys.stdin.read()
+used = 0
+out = []
+for char in value:
+    width = 2 if ord(char) > 0xFFFF else 1
+    if used + width > 600:
+        break
+    out.append(char)
+    used += width
+print("".join(out), end="")'
 }
 
 sha256_bytes() {
