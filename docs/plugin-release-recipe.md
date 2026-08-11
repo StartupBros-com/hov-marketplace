@@ -22,6 +22,30 @@ dissolves the race: a draft release has an id but fires no announce.
 5. Verify the #tool-drops message by its timestamp, not the workflow's
    conclusion (a not-listed skip also reports success).
 
+## Release notes: lead with `## Highlights`
+
+The drop card's what's-new block is derived from the release body, in this
+order: an author-written `## Highlights` section's bullets → GitHub's auto
+"What's Changed" bullets → the first paragraph as prose. Only the first
+produces a clean 3-bullet card; the prose fallback reads as a wall of text
+and now emits a CI warning (audited 2026-08-11: 5 of 8 plugins' latest
+releases were on the fallback path).
+
+```markdown
+## Highlights
+
+- What changed, in the reader's terms — the capability, not the commit.
+- One line per change worth a user's attention; at most three reach the card.
+- Detail, incidents, and receipts go below this section (they are kept in
+  the release, just not on the card).
+```
+
+Rules that make the bullets land: user-facing outcome first (the extractor
+strips `feat:`/`fix:` prefixes and trailing `by @author in <url>`, so
+changelog-style bullets survive but read poorly); ≤180 characters each; and
+if a release genuinely has no user-visible change, say so in one bullet
+rather than leaving the section out.
+
 ## Announce service error semantics (issue #56)
 
 - **429 "GitHub release verification is rate limited"** — the service holds a
