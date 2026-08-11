@@ -13,6 +13,11 @@ set -euo pipefail
 # every preflight passes. Its audience binds the token to the SHA-256 digest of
 # the exact request bytes sent to the one fixed Tool Drop endpoint.
 #
+# Transition: callers pinned to workflow c981b872 execute this mutable helper
+# without CURRENT_RELEASE_FILE. That exact server-authorized workflow receives a
+# canonical legacy body and generic audience until all callers repin; its URL,
+# token, display fields, and any secret are never used for delivery.
+#
 # Soft exits (loud in the run UI, green in the checks list): marketplace not
 # yet repinned to this release, or no card block registered — both resolve
 # with a marketplace PR, then editing the release re-fires the announce.
@@ -23,6 +28,7 @@ fail() {
 }
 
 readonly TOOL_RELEASES_ENDPOINT='https://members.startupbros.com/api/internal/ops/tool-releases'
+readonly LEGACY_OIDC_AUDIENCE='https://github.com/StartupBros-com'
 # Six current caller repositories, one inherited same-release lease, and one
 # spare bounded window can all clear without turning a transient queue into loss.
 readonly ANNOUNCE_MAX_ATTEMPTS=8
@@ -271,16 +277,31 @@ announce() {
   local notes request_body request_sha audience oidc_token
   local response_body response_headers http_status retry_after retry_delay retry_jitter
   local attempt result=1
-  notes="$(notes_summary)"
-  request_body="$(jq -cn \
-    --arg operation announce \
-    --arg repository "$REPOSITORY" \
-    --arg releaseId "$RELEASE_ID" \
-    --arg notesSummary "$notes" \
-    '{operation: $operation, repository: $repository, releaseId: $releaseId} + (if $notesSummary == "" then {} else {notesSummary: $notesSummary} end)')"
+  if [[ "${LEGACY_MODE:-false}" == true ]]; then
+    request_body="$(jq -cn \
+      --arg operation announce \
+      --arg repository "$REPOSITORY" \
+      --arg releaseId "$RELEASE_ID" \
+      --arg tag "$RELEASE_TAG" \
+      --arg releaseName "$REPOSITORY $RELEASE_TAG" \
+      --arg releaseUrl "https://github.com/StartupBros-com/$REPOSITORY/releases/tag/$RELEASE_TAG" \
+      '{operation: $operation, repository: $repository, releaseId: $releaseId, tag: $tag, releaseName: $releaseName, releaseUrl: $releaseUrl}')"
+  else
+    notes="$(notes_summary)"
+    request_body="$(jq -cn \
+      --arg operation announce \
+      --arg repository "$REPOSITORY" \
+      --arg releaseId "$RELEASE_ID" \
+      --arg notesSummary "$notes" \
+      '{operation: $operation, repository: $repository, releaseId: $releaseId} + (if $notesSummary == "" then {} else {notesSummary: $notesSummary} end)')"
+  fi
   readonly request_body
   request_sha="$(sha256_bytes "$request_body")"
-  audience="${TOOL_RELEASES_ENDPOINT}#sha256=$request_sha"
+  if [[ "${LEGACY_MODE:-false}" == true ]]; then
+    audience="$LEGACY_OIDC_AUDIENCE"
+  else
+    audience="${TOOL_RELEASES_ENDPOINT}#sha256=$request_sha"
+  fi
   readonly request_sha audience
 
   ANNOUNCE_RESPONSE_DIR="$(mktemp -d)" || fail "could not create response capture directory"
@@ -373,11 +394,22 @@ main() {
   is_positive_uint "$RELEASE_ID" || fail "RELEASE_ID must be a positive canonical decimal integer"
   [[ "$REPOSITORY" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] || fail "REPOSITORY has an invalid shape"
 
-  load_current_release
-  if [[ "$CURRENT_RELEASE_PRERELEASE" == true || "$CURRENT_RELEASE_DRAFT" == true ]]; then
-    printf 'prerelease or draft release ignored\n'
-    return
+  if [[ -n "${CURRENT_RELEASE_FILE:-}" ]]; then
+    LEGACY_MODE=false
+    load_current_release
+    if [[ "$CURRENT_RELEASE_PRERELEASE" == true || "$CURRENT_RELEASE_DRAFT" == true ]]; then
+      printf 'prerelease or draft release ignored\n'
+      return
+    fi
+  else
+    require OIDC_TOKEN
+    [[ -z "${ANNOUNCE_SECRET:-}" ]] || fail "legacy workflow secret authentication is not supported"
+    LEGACY_MODE=true
+    CURRENT_RELEASE_NOTES=''
+    readonly CURRENT_RELEASE_NOTES
+    unset ANNOUNCE_URL OIDC_TOKEN RELEASE_NAME RELEASE_URL RELEASE_NOTES RELEASE_PRERELEASE RELEASE_DRAFT
   fi
+  readonly LEGACY_MODE
   [[ "$EVENT_ACTION" == published || "$EVENT_ACTION" == edited ]] || fail "unsupported release action: $EVENT_ACTION"
 
   require LATEST_STABLE_ID
