@@ -12,6 +12,7 @@ EXPECTED_SHA="${EXPECTED_SHA:-}"
 EXPECTED_PAYLOAD_PATHS="${EXPECTED_PAYLOAD_PATHS:-}"
 ALLOW_LOCAL_FILE_REMOTES="${ALLOW_LOCAL_FILE_REMOTES:-0}"
 MARKETPLACE_TEST_REMOTE_ROOT="${MARKETPLACE_TEST_REMOTE_ROOT:-}"
+ANNOUNCE_WORKFLOW_PIN="${ANNOUNCE_WORKFLOW_PIN:-c981b872ebf650805200ad72c8b7142232f8b3f6}"
 
 fail() {
   printf 'error: %s\n' "$*" >&2
@@ -193,7 +194,7 @@ remote_for_url() {
 
 validate_remote_plugin() {
   local name="$1" url="$2" sha="$3" metadata_version="$4" metadata_tag="$5"
-  local remote repo manifest_json manifest_name manifest_version resolved_tag
+  local remote repo manifest_json manifest_name manifest_version resolved_tag version_file release_workflow
   remote="$(remote_for_url "$url")"
   repo="$(mktemp -d)"
   git -C "$repo" init -q
@@ -203,8 +204,9 @@ validate_remote_plugin() {
   fi
   git -C "$repo" cat-file -e FETCH_HEAD^{commit} 2>/dev/null || { rm -rf "$repo"; fail "plugin $name pin is not a commit"; }
   [[ "$(git -C "$repo" rev-parse FETCH_HEAD)" == "$sha" ]] || { rm -rf "$repo"; fail "plugin $name fetched commit does not match its pin"; }
+  git -C "$repo" update-ref refs/announce/pinned "$sha"
 
-  manifest_json="$(git -C "$repo" show FETCH_HEAD:.claude-plugin/plugin.json 2>/dev/null)" || { rm -rf "$repo"; fail "plugin $name pin has no .claude-plugin/plugin.json"; }
+  manifest_json="$(git -C "$repo" show refs/announce/pinned:.claude-plugin/plugin.json 2>/dev/null)" || { rm -rf "$repo"; fail "plugin $name pin has no .claude-plugin/plugin.json"; }
   jq -e 'type == "object" and (.name | type == "string" and length > 0) and (.version | type == "string" and length > 0)' <<<"$manifest_json" >/dev/null || { rm -rf "$repo"; fail "plugin $name pinned manifest has an invalid shape"; }
   manifest_name="$(jq -r '.name' <<<"$manifest_json")"
   manifest_version="$(jq -r '.version' <<<"$manifest_json")"
@@ -212,6 +214,30 @@ validate_remote_plugin() {
   is_semver "$manifest_version" || { rm -rf "$repo"; fail "plugin $name pinned manifest version is not semver"; }
   [[ -z "$metadata_version" || "$manifest_version" == "$metadata_version" ]] || { rm -rf "$repo"; fail "plugin $name marketplace and pinned manifest versions differ"; }
   git -C "$repo" cat-file -e "FETCH_HEAD:skills/$name/SKILL.md" 2>/dev/null || { rm -rf "$repo"; fail "plugin $name pin is missing skills/$name/SKILL.md"; }
+
+  # Announcement contract is checked on the CURRENT DEFAULT BRANCH — the tree
+  # the next tag will inherit. Historical release pins may legitimately predate
+  # the policy (wsl-cdp v0.3.4 did); invalidating those would break installs
+  # without improving the next release. A post-release failure is too late and
+  # too quiet: design-rails lost twelve announcements to a missing VERSION.
+  if ! git -C "$repo" fetch -q --depth=1 "$remote" HEAD; then
+    rm -rf "$repo"
+    fail "plugin $name default branch is not reachable from $url"
+  fi
+  version_file="$(git -C "$repo" show FETCH_HEAD:VERSION 2>/dev/null)" || { rm -rf "$repo"; fail "plugin $name default branch has no root VERSION required by the announce train"; }
+  version_file="$(tr -d '[:space:]' <<<"$version_file")"
+  manifest_json="$(git -C "$repo" show FETCH_HEAD:.claude-plugin/plugin.json 2>/dev/null)" || { rm -rf "$repo"; fail "plugin $name default branch has no plugin manifest"; }
+  manifest_version="$(jq -r '.version' <<<"$manifest_json")"
+  [[ "$version_file" == "$manifest_version" ]] || { rm -rf "$repo"; fail "plugin $name default-branch VERSION $version_file differs from manifest $manifest_version"; }
+  release_workflow="$(git -C "$repo" show FETCH_HEAD:.github/workflows/release-train.yml 2>/dev/null)" || { rm -rf "$repo"; fail "plugin $name default branch has no release-train.yml"; }
+  grep -Fq "hov-tool-drop-announce.yml@$ANNOUNCE_WORKFLOW_PIN" <<<"$release_workflow" || { rm -rf "$repo"; fail "plugin $name release train does not pin the blessed announce workflow $ANNOUNCE_WORKFLOW_PIN"; }
+  grep -Eq '^[[:space:]]*id-token:[[:space:]]*write[[:space:]]*$' <<<"$release_workflow" || { rm -rf "$repo"; fail "plugin $name release train lacks id-token: write for OIDC"; }
+  ! grep -Fq 'TOOL_RELEASE_ANNOUNCE_SECRET' <<<"$release_workflow" || { rm -rf "$repo"; fail "plugin $name release train still uses the static announce secret"; }
+
+  # Restore the release pin for payload and tag checks below.
+  git -C "$repo" update-ref FETCH_HEAD refs/announce/pinned
+  manifest_json="$(git -C "$repo" show FETCH_HEAD:.claude-plugin/plugin.json)"
+  manifest_version="$(jq -r '.version' <<<"$manifest_json")"
 
   if [[ -n "$metadata_tag" ]]; then
     resolved_tag="$(git ls-remote "$remote" "refs/tags/$metadata_tag^{}" | jq -Rrs 'split("\n") | map(select(length > 0) | split("\t")[0]) | first // empty')"

@@ -43,11 +43,25 @@ make_plugin() {
   git init -q "$repo"
   git -C "$repo" config user.name Fixture
   git -C "$repo" config user.email fixture@example.com
-  mkdir -p "$repo/.claude-plugin" "$repo/skills/$name"
+  mkdir -p "$repo/.claude-plugin" "$repo/skills/$name" "$repo/.github/workflows"
   jq -n --arg name "$name" --arg version "$version" '{name: $name, version: $version}' >"$repo/.claude-plugin/plugin.json"
+  printf '%s\n' "$version" >"$repo/VERSION"
   printf '# fixture\n' >"$repo/skills/$name/SKILL.md"
-  git -C "$repo" add .claude-plugin/plugin.json "skills/$name/SKILL.md"
+  cat >"$repo/.github/workflows/release-train.yml" <<'EOF'
+name: Release train
+on:
+  release:
+    types: [published, edited]
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  announce:
+    uses: StartupBros-com/hov-marketplace/.github/workflows/hov-tool-drop-announce.yml@c981b872ebf650805200ad72c8b7142232f8b3f6
+EOF
+  git -C "$repo" add .claude-plugin/plugin.json "skills/$name/SKILL.md" VERSION .github/workflows/release-train.yml
   git -C "$repo" commit -qm fixture
+  git -C "$repo" branch -M main
   git -C "$repo" tag "$tag"
   git clone -q --bare "$repo" "$REMOTE_ROOT/StartupBros-com/$name.git"
   git -C "$repo" rev-parse HEAD
@@ -79,6 +93,48 @@ validate() {
 write_manifest "$TOKEN_SHA" "$PRO_SHA" 10
 expect_pass "valid syntax" validate syntax
 expect_pass "valid full fixture and U7 expectations" env EXPECTED_PLUGIN_NAME=token-eater EXPECTED_PLUGIN_VERSION=1.2.3 EXPECTED_RELEASE_ID=10 EXPECTED_RELEASE_TAG=v1.2.3 EXPECTED_SHA="$TOKEN_SHA" EXPECTED_PAYLOAD_PATHS=.claude-plugin/plugin.json,skills/token-eater/SKILL.md bash -c 'cd "$1" && MARKETPLACE_TEST_REMOTE_ROOT="$2" ALLOW_LOCAL_FILE_REMOTES=1 "$3" full' _ "$WORK" "$REMOTE_ROOT" "$VALIDATOR"
+
+# Announcement-contract failures are pinned-tree defects. Omit release metadata
+# on these fixtures so the failure is the contract itself, never tag resolution.
+write_unreleased_manifest() {
+  local sha="$1"
+  write_manifest "$sha" "$PRO_SHA" 10
+  jq 'del(.plugins[0].metadata)' "$WORK/.claude-plugin/marketplace.json" >"$TMP/unreleased.json"
+  mv "$TMP/unreleased.json" "$WORK/.claude-plugin/marketplace.json"
+}
+publish_fixture_commit() {
+  git -C "$TMP/token-eater" add -A
+  git -C "$TMP/token-eater" commit -qm "$1"
+  git -C "$TMP/token-eater" push -q "$REMOTE_ROOT/StartupBros-com/token-eater.git" HEAD:main
+  git -C "$TMP/token-eater" rev-parse HEAD
+}
+
+git -C "$TMP/token-eater" rm -q VERSION
+MISSING_VERSION_SHA="$(publish_fixture_commit 'missing version')"
+write_unreleased_manifest "$MISSING_VERSION_SHA"
+expect_fail "pinned plugin without VERSION rejected before release" validate full
+
+printf '9.9.9\n' >"$TMP/token-eater/VERSION"
+MISMATCH_VERSION_SHA="$(publish_fixture_commit 'mismatched version')"
+write_unreleased_manifest "$MISMATCH_VERSION_SHA"
+expect_fail "VERSION must match pinned plugin manifest" validate full
+
+printf '1.2.3\n' >"$TMP/token-eater/VERSION"
+sed -i 's/c981b872ebf650805200ad72c8b7142232f8b3f6/0000000000000000000000000000000000000000/' "$TMP/token-eater/.github/workflows/release-train.yml"
+BAD_PIN_SHA="$(publish_fixture_commit 'wrong announce pin')"
+write_unreleased_manifest "$BAD_PIN_SHA"
+expect_fail "release train must pin blessed announce workflow" validate full
+
+sed -i 's/0000000000000000000000000000000000000000/c981b872ebf650805200ad72c8b7142232f8b3f6/; /id-token: write/d' "$TMP/token-eater/.github/workflows/release-train.yml"
+NO_OIDC_SHA="$(publish_fixture_commit 'missing oidc permission')"
+write_unreleased_manifest "$NO_OIDC_SHA"
+expect_fail "release train requires OIDC permission" validate full
+
+sed -i '/contents: read/a\  id-token: write' "$TMP/token-eater/.github/workflows/release-train.yml"
+printf '\n# TOOL_RELEASE_ANNOUNCE_SECRET must never return\n' >>"$TMP/token-eater/.github/workflows/release-train.yml"
+STATIC_SECRET_SHA="$(publish_fixture_commit 'static announce secret')"
+write_unreleased_manifest "$STATIC_SECRET_SHA"
+expect_fail "static announce secret is forbidden" validate full
 
 printf '{broken\n' >"$WORK/.claude-plugin/marketplace.json"
 expect_fail "malformed JSON" validate syntax
