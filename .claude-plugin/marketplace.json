@@ -125,13 +125,13 @@
       "source": {
         "source": "url",
         "url": "https://github.com/StartupBros-com/design-rails.git",
-        "sha": "d4e55064d5da482a901e96f9ae6d57860c1512ce"
+        "sha": "cf2d1ae7ed5ec1c305af48381725d19d92ff65c0"
       },
       "description": "Guardrails that keep AI agents on your design system. Posture-check whether a real, agent-wired, CI-enforced design system exists, derive a Google-spec DESIGN.md from the code you already ship, put open taste decisions on visual pages for the human to pick, and ratchet drift budgets that only move down. Read-only on application source \u2014 it authors under design/ and never edits your code.",
       "metadata": {
-        "version": "0.11.0",
-        "releaseId": 368373707,
-        "releaseTag": "v0.11.0"
+        "version": "0.11.1",
+        "releaseId": 368384189,
+        "releaseTag": "v0.11.1"
       },
       "card": {
         "rows": [
