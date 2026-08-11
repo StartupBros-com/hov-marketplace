@@ -58,13 +58,13 @@
       "source": {
         "source": "url",
         "url": "https://github.com/StartupBros-com/skill-tuner.git",
-        "sha": "174bcdf5ce958923b41db7bcd51faac0234f86ab"
+        "sha": "fc17f23e049cb27b484b5b79e8a8638ac673df12"
       },
       "description": "Tell whether a change to an agent-consumed document actually worked. /skill-tuner:tune probes a SKILL.md, AGENTS.md or CLAUDE.md, fixes what three independent skeptics confirm, and proves the description still routes. Paired comparison with a confidence interval, content-hashed provenance with drift detection, and it reads skill-creator benchmark output.",
       "metadata": {
-        "version": "0.5.0",
-        "releaseId": 367784122,
-        "releaseTag": "v0.5.0"
+        "version": "0.8.1",
+        "releaseId": 368308293,
+        "releaseTag": "v0.8.1"
       },
       "card": {
         "rows": [
@@ -125,13 +125,13 @@
       "source": {
         "source": "url",
         "url": "https://github.com/StartupBros-com/design-rails.git",
-        "sha": "6da587e4c44c3fe43748e4d78a7748757eb9c3a2"
+        "sha": "7bca61c36f6a1370f4f6d8021388b9df3079a848"
       },
       "description": "Guardrails that keep AI agents on your design system. Posture-check whether a real, agent-wired, CI-enforced design system exists, derive a Google-spec DESIGN.md from the code you already ship, put open taste decisions on visual pages for the human to pick, and ratchet drift budgets that only move down. Read-only on application source \u2014 it authors under design/ and never edits your code.",
       "metadata": {
-        "version": "0.2.2",
-        "releaseId": 367716077,
-        "releaseTag": "v0.2.2"
+        "version": "0.12.0",
+        "releaseId": 368416118,
+        "releaseTag": "v0.12.0"
       },
       "card": {
         "rows": [
@@ -140,6 +140,50 @@
           "\ud83d\udee1\ufe0f **Read-only on your source** \u00b7 it authors under design/ and never edits your application code"
         ],
         "run": "Then ask your agent to posture-check your design system with `/design-rails`"
+      }
+    },
+    {
+      "name": "harness-vet",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/StartupBros-com/harness-vet.git",
+        "sha": "e3ab6aafcc6311fcee2e69b40cc3203f2ecf9039"
+      },
+      "description": "Adoption gate for external agent tooling. /harness-vet deep-dives a skill, plugin, MCP server, repo, or paper against YOUR harness: install-state and overlap checked, claims verified by running them, context cost priced, per-component ADOPT/ADAPT/EXTRACT/SKIP/REJECT verdicts with re-eval triggers \u2014 and an audit dividend that often outvalues the verdict.",
+      "metadata": {
+        "version": "0.1.2",
+        "releaseId": 368391345,
+        "releaseTag": "v0.1.2"
+      },
+      "card": {
+        "rows": [
+          "\ud83d\udea6 **Before you install that skill** \u00b7 the default answer is skip, and the receipts say why",
+          "\ud83d\udd2c **Run-it evidence, not README trust** \u00b7 its own tests run, guards probed both directions, numbers reproduced",
+          "\ud83d\udcb0 **The audit dividend** \u00b7 even a rejected candidate pays \u2014 vetting it surfaces drift in your own harness"
+        ],
+        "run": "Then run `/harness-vet <url>` on the next thing your feed says you need"
+      }
+    },
+    {
+      "name": "rent-check",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/StartupBros-com/rent-check.git",
+        "sha": "76db92ce7aa7cf427034bc1c087f5bc8ee2bb2fb"
+      },
+      "description": "Every always-loaded line pays rent or gets cut. /rent-check audits CLAUDE.md, AGENTS.md, rules dirs and the always-loaded surface around them: load-class costing, enforcement-backing analysis (which rules are just words), reality drift against the live repo, and evidence-tiered verdicts with folklore labeled as folklore \u2014 report-first, verified draft diffs, never auto-applied.",
+      "metadata": {
+        "version": "0.3.0",
+        "releaseId": 368412763,
+        "releaseTag": "v0.3.0"
+      },
+      "card": {
+        "rows": [
+          "\u26a1 **Your CLAUDE.md bills you every turn** \u00b7 most context files carry lines that earn nothing",
+          "\ud83d\udd2c **Evidence-tiered verdicts, folklore labeled** \u00b7 KEEP/FIX/PROMOTE/DEMOTE/MERGE/CUT with citations \u2014 and which of your rules are just words",
+          "\ud83d\udee1\ufe0f **Report-first, edit-never** \u00b7 verified draft diffs land as inputs to your decision; a mandatory counter-finding keeps it honest"
+        ],
+        "run": "Then run `/rent-check` in your busiest repo"
       }
     }
   ]

@@ -47,6 +47,8 @@ expected_source_url() {
     wsl-cdp) printf '%s\n' 'https://github.com/StartupBros-com/wsl-cdp.git' ;;
     memory-dream) printf '%s\n' 'https://github.com/StartupBros-com/memory-dream.git' ;;
     design-rails) printf '%s\n' 'https://github.com/StartupBros-com/design-rails.git' ;;
+    harness-vet) printf '%s\n' 'https://github.com/StartupBros-com/harness-vet.git' ;;
+    rent-check) printf '%s\n' 'https://github.com/StartupBros-com/rent-check.git' ;;
     *) return 1 ;;
   esac
 }
