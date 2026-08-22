@@ -24,9 +24,11 @@ jobs:
       - name: Lint Tool Drop announce scripts
         run: >-
           shellcheck scripts/tool-drop-announce.sh
+          scripts/repin-reconcile.sh
           tests/tool-drop-announce.test.sh
           tests/tool-drop-announce-retry.test.sh
           tests/notes-summary.test.sh
+          tests/repin-reconcile.test.sh
       - name: Validate marketplace without network access
         env:
           BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
@@ -39,6 +41,8 @@ jobs:
         run: bash ./tests/tool-drop-announce-retry.test.sh
       - name: Run notes-summary tests
         run: bash ./tests/notes-summary.test.sh
+      - name: Run repin reconcile tests
+        run: bash ./tests/repin-reconcile.test.sh
 
   public-pr-syntax:
     name: Public PR data check

@@ -1,0 +1,101 @@
+name: Repin reconcile
+
+# Keep the distribution manifest converging on what the plugins have actually
+# released, by opening a repin PR whenever the two disagree.
+#
+# This is the piece that removes the manual step the release recipe used to
+# require. It does NOT merge: the card is still updated by a reviewed PR, because
+# a standing credential able to write this manifest unattended is the one whose
+# compromise reaches every installed client. What changes is only who does the
+# typing.
+#
+# The write is local — a branch and a PR in THIS repository — and the reads are
+# public release metadata. That inversion is deliberate: doing the same job from
+# a plugin repo would need a cross-repo write credential, which is precisely what
+# made this manual. No new secret is introduced by this workflow.
+
+on:
+  schedule:
+    # Off the hour on purpose: :00 is where every scheduled job on GitHub piles up.
+    - cron: '23 * * * *'
+  workflow_dispatch:
+    inputs:
+      only_plugin:
+        description: 'Restrict to one plugin name (optional)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: repin-reconcile
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Check out main
+        uses: actions/checkout@ac593985615ec2ede58e132d2e21d2b1cbd6127c
+        with:
+          persist-credentials: false
+
+      - name: Reconcile the manifest against released plugins
+        id: reconcile
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ONLY_PLUGIN: ${{ inputs.only_plugin }}
+          PLAN_FILE: ${{ runner.temp }}/repin-plan.tsv
+        run: |
+          set -euo pipefail
+          ./scripts/repin-reconcile.sh
+          if [ -s "$PLAN_FILE" ]; then
+            echo "drift=true" >> "$GITHUB_OUTPUT"
+            # Content-addressed branch name: the SAME drift always produces the
+            # SAME branch, so a second run finds the branch already there and
+            # opens nothing. That is what makes an hourly schedule safe.
+            echo "key=$(sha256sum "$PLAN_FILE" | cut -c1-12)" >> "$GITHUB_OUTPUT"
+          else
+            echo "drift=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open the repin PR
+        if: steps.reconcile.outputs.drift == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PLAN_FILE: ${{ runner.temp }}/repin-plan.tsv
+          BRANCH: repin/auto-${{ steps.reconcile.outputs.key }}
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+            echo "::notice::$BRANCH already exists for this exact drift; nothing to open."
+            exit 0
+          fi
+
+          {
+            printf 'Opened by the repin reconciler: the marketplace manifest disagreed with what these plugins have released.\n\n'
+            printf '| plugin | version | tag | releaseId | sha | release state |\n|---|---|---|---|---|---|\n'
+            while IFS=$'\t' read -r name version tag rel_id sha is_draft; do
+              [ -n "$name" ] || continue
+              state=published
+              [ "$is_draft" = true ] && state='**draft** (staged, publish after this merges)'
+              printf '| %s | %s | `%s` | %s | `%s` | %s |\n' \
+                "$name" "$version" "$tag" "$rel_id" "${sha:0:12}" "$state"
+            done < "$PLAN_FILE"
+            printf '\nRe-running the reconciler on this same drift is a no-op — the branch name is derived from the change itself.\n'
+            printf '\nA plugin listed as **draft** is staged and waiting on this card: merge here, then publish it (pro-gate: the "Publish staged release" workflow).\n'
+          } > "$RUNNER_TEMP/pr-body.md"
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout -b "$BRANCH"
+          git add .claude-plugin/marketplace.json
+          git commit -m 'chore(marketplace): repin cards to the plugins current releases'
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$BRANCH"
+          gh pr create --base main --head "$BRANCH" \
+            --title 'chore(marketplace): repin cards to the plugins current releases' \
+            --body-file "$RUNNER_TEMP/pr-body.md"
