@@ -385,6 +385,24 @@ marketplace_has_card() {
     "$MARKETPLACE_MANIFEST" >/dev/null
 }
 
+# Report a release that finished WITHOUT posting a drop card. Deliberately
+# louder than the ::notice:: this replaced: a silent skip on a green run is the
+# failure mode the release recipe currently works around by telling readers to
+# grep the log. Emits an error annotation, a step-summary line, and a stable
+# machine-readable marker so callers can assert on it.
+report_not_announced() {
+  local reason="$1" message="$2"
+  printf '::error title=Not announced::%s\n' "$message"
+  printf 'hov-drop-announce: status=not-announced reason=%s repository=%s tag=%s\n' \
+    "$reason" "${REPOSITORY:-?}" "${RELEASE_TAG:-?}"
+  if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+    {
+      printf '### Not announced (%s)\n\n' "$reason"
+      printf '%s\n' "$message"
+    } >> "$GITHUB_STEP_SUMMARY"
+  fi
+}
+
 main() {
   [[ $# -eq 0 ]] || fail "this helper accepts no arguments"
   require EVENT_ACTION
@@ -422,14 +440,22 @@ main() {
   RELEASE_VERSION="$(verify_release)"
 
   if ! marketplace_lists_release; then
-    printf '::notice title=Not announced::hov-marketplace does not yet list %s %s at %s. Merge the repin PR, then edit the release to re-fire the announce.\n' \
-      "$REPOSITORY" "$RELEASE_TAG" "$SOURCE_SHA"
+    # NOT a notice. A skipped announce leaves the job green, which is
+    # indistinguishable from a successful post — that is why the release recipe
+    # has to tell readers to grep the run log instead of trusting the run's
+    # conclusion. An ::error:: annotation makes the run visibly not-announced
+    # while still returning 0, because plugins that publish BEFORE repinning
+    # legitimately reach this state on every release; failing here would turn
+    # their normal flow red. Once every plugin stages draft-first (so the card
+    # is always current at publish), this should become a hard failure.
+    report_not_announced 'not-listed' \
+      "hov-marketplace does not yet list $REPOSITORY $RELEASE_TAG at $SOURCE_SHA. Merge the repin PR, then edit the release to re-fire the announce."
     return
   fi
 
   if ! marketplace_has_card; then
-    printf '::notice title=Not announced::%s has no card block in hov-marketplace. Add one (card: {rows, run}) in a marketplace PR, then edit the release to re-fire.\n' \
-      "$REPOSITORY"
+    report_not_announced 'no-card' \
+      "$REPOSITORY has no card block in hov-marketplace. Add one (card: {rows, run}) in a marketplace PR, then edit the release to re-fire."
     return
   fi
 
