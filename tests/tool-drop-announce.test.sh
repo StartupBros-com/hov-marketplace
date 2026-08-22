@@ -1139,33 +1139,44 @@ jq -e --arg notes "$json_code_bullet" '.notesSummary == $notes' "$BODY_FILE" >/d
 pass "current release JSON remains inert data and cannot change endpoint or audience"
 
 expect_soft_no_http() {
-  local label="$1" manifest="$2" latest_id="$3"
+  local label="$1" manifest="$2" latest_id="$3" reason="${4:-}"
   reset_capture
   if ! run_helper "$HELPER" "$manifest" "$FIXTURE_RELEASE_ID" "$latest_id" "$SOURCE_SHA" "$CURRENT_RELEASE_FILE" published >"$TMP/run-output" 2>&1; then
     command cat "$TMP/run-output" >&2
     die "$label"
   fi
   [[ ! -s "$CALLS_FILE" ]] || die "$label minted or sent a request"
+  # A skip that returns 0 is indistinguishable from a successful post unless it
+  # says so loudly. Assert BOTH the human-visible error annotation and the
+  # stable machine-readable marker, so this can never quietly regress to the
+  # ::notice:: that made "green run, no card posted" the default outcome.
+  if [[ -n "$reason" ]]; then
+    grep -q "status=not-announced reason=$reason" "$TMP/run-output" \
+      || die "$label did not emit the not-announced marker for reason=$reason"
+    grep -q '::error title=Not announced::' "$TMP/run-output" \
+      || die "$label skipped the announce without an error annotation"
+    pass "$label reports not-announced loudly (reason=$reason)"
+  fi
   pass "$label does not mint or send"
 }
 
 jq '(.plugins[0].name) = "other-tool"' "$MANIFEST" >"$TMP/mismatch-name.json"
-expect_soft_no_http "manifest name mismatch" "$TMP/mismatch-name.json" "$FIXTURE_RELEASE_ID"
+expect_soft_no_http "manifest name mismatch" "$TMP/mismatch-name.json" "$FIXTURE_RELEASE_ID" not-listed
 
 jq '(.plugins[0].source.sha) = "0000000000000000000000000000000000000000"' "$MANIFEST" >"$TMP/mismatch-sha.json"
-expect_soft_no_http "manifest source SHA mismatch" "$TMP/mismatch-sha.json" "$FIXTURE_RELEASE_ID"
+expect_soft_no_http "manifest source SHA mismatch" "$TMP/mismatch-sha.json" "$FIXTURE_RELEASE_ID" not-listed
 
 jq '(.plugins[0].metadata.version) = "9.9.9"' "$MANIFEST" >"$TMP/mismatch-version.json"
-expect_soft_no_http "manifest version mismatch" "$TMP/mismatch-version.json" "$FIXTURE_RELEASE_ID"
+expect_soft_no_http "manifest version mismatch" "$TMP/mismatch-version.json" "$FIXTURE_RELEASE_ID" not-listed
 
 jq '(.plugins[0].metadata.releaseId) = 43' "$MANIFEST" >"$TMP/mismatch-release-id.json"
-expect_soft_no_http "manifest release ID mismatch" "$TMP/mismatch-release-id.json" "$FIXTURE_RELEASE_ID"
+expect_soft_no_http "manifest release ID mismatch" "$TMP/mismatch-release-id.json" "$FIXTURE_RELEASE_ID" not-listed
 
 jq '(.plugins[0].metadata.releaseTag) = "v9.9.9"' "$MANIFEST" >"$TMP/mismatch-release-tag.json"
-expect_soft_no_http "manifest release tag mismatch" "$TMP/mismatch-release-tag.json" "$FIXTURE_RELEASE_ID"
+expect_soft_no_http "manifest release tag mismatch" "$TMP/mismatch-release-tag.json" "$FIXTURE_RELEASE_ID" not-listed
 
 jq 'del(.plugins[0].card) | .plugins += [(.plugins[0] | .source.sha = "0000000000000000000000000000000000000000" | .card = {rows: ["wrong", "tuple", "card"], run: "No"})]' "$MANIFEST" >"$TMP/mismatch-card.json"
-expect_soft_no_http "card on a nonmatching tuple" "$TMP/mismatch-card.json" "$FIXTURE_RELEASE_ID"
+expect_soft_no_http "card on a nonmatching tuple" "$TMP/mismatch-card.json" "$FIXTURE_RELEASE_ID" no-card
 
 expect_soft_no_http "non-latest stable release" "$MANIFEST" 43
 
