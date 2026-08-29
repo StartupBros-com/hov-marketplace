@@ -8,6 +8,21 @@ run lost that race by seconds and skipped, and the recovery re-fires collided
 with the announce service's global verification gate (issue #56). Draft-first
 dissolves the race: a draft release has an id but fires no announce.
 
+## Before adding a NEW plugin to the catalog
+
+Growing the catalog has a measured cost outside Claude Code. Verified live on
+2026-08-10 with Codex v0.147.0: `codex plugin marketplace add
+StartupBros-com/hov-marketplace` reads this manifest unchanged and installs from
+it, so the catalog is cross-agent installable at no extra cost. But Codex warns
+`Exceeded skills context budget. All skill descriptions were removed` on
+plugin-heavy installs, and that silently disables model-invoked routing there.
+
+The binding constraint is the **number of skills and the length of their
+descriptions**, not the number of repos — consolidating repos does not buy
+headroom, trimming descriptions does. Before adding plugin N+1, either re-check
+a Codex install or accept that the one distribution lane already proven to work
+outside Claude Code degrades a little further. Keep descriptions lean.
+
 ## The order
 
 1. Merge the version bump in the plugin repo; note the main sha.
