@@ -191,7 +191,7 @@
       "source": {
         "source": "url",
         "url": "https://github.com/StartupBros-com/papercut.git",
-        "sha": "1f9a5a930cee72f7d77dd2c330d69a9d4d24983d"
+        "sha": "f74a66ef6a04f70809913f4554c49b3e079a92b9"
       },
       "description": "Friction your agents route around silently, captured automatically and mined into ranked, verified fixes. A PostToolUseFailure hook logs every hard tool failure; a stdlib-only CLI ranks by distinct sessions hit, folds duplicates into causal families, and refuses to call a fix verified on silence alone.",
       "metadata": {
