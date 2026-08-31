@@ -12,6 +12,7 @@ Claude Code tools for builders. Add the marketplace over HTTPS once, then instal
 /plugin install design-rails@hov
 /plugin install harness-vet@hov
 /plugin install rent-check@hov
+/plugin install papercut@hov
 ```
 
 Third-party marketplace updates are off by default. Open `/plugin`, select **Marketplaces**, choose `hov`, and select **Enable auto-update**. Updates are applied at the start of a Claude Code session.
@@ -63,3 +64,12 @@ Your always-on context has to pay rent. `/rent-check` audits what CLAUDE.md and 
 ## License
 
 MIT
+
+## papercut
+
+Agents route around small frictions silently — and friction nobody records is
+friction nobody fixes. papercut logs every hard tool failure automatically,
+ranks the pile by how many distinct sessions hit each snag, folds duplicate
+spellings into causal families, and carries one family at a time into a
+tracked work item with a verification stage that refuses to call the fix done
+on silence alone.
