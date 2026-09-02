@@ -25,7 +25,14 @@ outside Claude Code degrades a little further. Keep descriptions lean.
 
 ## The order
 
-1. Merge the version bump in the plugin repo; note the main sha.
+1. Land the version bump in the plugin repo **through a PR**, then note the
+   MERGED main sha. A repo with a required-checks ruleset declines a direct
+   push to main outright (papercut gained `require-ci` on 2026-09-01; the
+   v0.1.8 push was refused with GH013 after tests, vendor and bump had
+   already run), and a squash merge changes the sha — so the tag goes at
+   the merged head, never at the local release commit. Push `vX.Y.Z` as a
+   tag at that sha before the card validates: a draft mints no tag ref and
+   `validate-marketplace.sh` requires one that resolves to the pinned commit.
 2. `gh release create vX.Y.Z --repo StartupBros-com/<plugin> --target main --draft --title "<plugin> vX.Y.Z" --notes "..."` — the draft's id is the
    `releaseId` for the card. Branch names must never be tag-shaped
    (`vX.Y.Z` as a branch collides with the tag in `actions/checkout` ref
