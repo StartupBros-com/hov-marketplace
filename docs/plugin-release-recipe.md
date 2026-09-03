@@ -45,8 +45,19 @@ outside Claude Code degrades a little further. Keep descriptions lean.
    conclusion (a not-listed skip also reports success):
 
    ```bash
+   gh run list --repo StartupBros-com/<plugin> --workflow "Release train" --limit 8 \
+     --json databaseId,status,displayTitle,createdAt \
+     --jq '.[] | select(.displayTitle=="<plugin> v<version>") | "\(.databaseId) \(.status) \(.createdAt)"'
    gh run view <run-id> --repo StartupBros-com/<plugin> --log \
      | grep -E '"status":"announced"|does not yet list'
+
+   Select the run by its display title and a creation time after the publish
+   (never "newest completed": that printed the previous release's receipt once),
+   and inline the title in the filter: the GitHub CLI's `--jq` takes no `--arg`,
+   and a retry loop around that error runs forever. papercut ships this whole
+   step as `scripts/release/release-finish.sh`, with the release PR step as
+   `scripts/release/release-pr.sh`; both are idempotent and parameterized by
+   version.
    ```
 
    `{"status":"announced","messageId":"…"}` is the terminal proof. A
