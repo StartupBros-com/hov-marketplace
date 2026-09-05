@@ -147,21 +147,21 @@
       "source": {
         "source": "url",
         "url": "https://github.com/StartupBros-com/harness-vet.git",
-        "sha": "e3ab6aafcc6311fcee2e69b40cc3203f2ecf9039"
+        "sha": "83680acdf331e63ffda4f4fd1bac7760824ddfb3"
       },
-      "description": "Adoption gate for external agent tooling. /harness-vet deep-dives a skill, plugin, MCP server, repo, or paper against YOUR harness: install-state and overlap checked, claims verified by running them, context cost priced, per-component ADOPT/ADAPT/EXTRACT/SKIP/REJECT verdicts with re-eval triggers \u2014 and an audit dividend that often outvalues the verdict.",
+      "description": "Adoption gate for external agent tooling. /harness-vet deep-dives a skill, plugin, MCP server, repo, or paper against YOUR harness: a candidate can be skip globally and adopt in one project, with artifact safety judged once and utility, reachable incumbents and context cost judged per target \u2014 claims verified by running them, placement and activation verified on the live host, and an audit dividend that often outvalues the verdict.",
       "metadata": {
-        "version": "0.1.2",
-        "releaseId": 368391345,
-        "releaseTag": "v0.1.2"
+        "version": "0.2.0",
+        "releaseId": 383319042,
+        "releaseTag": "v0.2.0"
       },
       "card": {
         "rows": [
           "\ud83d\udea6 **Before you install that skill** \u00b7 the default answer is skip, and the receipts say why",
-          "\ud83d\udd2c **Run-it evidence, not README trust** \u00b7 its own tests run, guards probed both directions, numbers reproduced",
+          "\ud83c\udfaf **Right skill, wrong scope** \u00b7 useless clutter globally can be the perfect fit in one project \u2014 v0.2 judges each target on its own",
           "\ud83d\udcb0 **The audit dividend** \u00b7 even a rejected candidate pays \u2014 vetting it surfaces drift in your own harness"
         ],
-        "run": "Then run `/harness-vet <url>` on the next thing your feed says you need"
+        "run": "Then run `/harness-vet <url> for <project-path>` on the next thing your feed says you need"
       }
     },
     {
