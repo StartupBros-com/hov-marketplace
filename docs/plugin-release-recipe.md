@@ -34,7 +34,7 @@ from pro-gate, generalized in hov-marketplace#118): `auto-release.yml`,
    mismatch), and `docs/release-notes/vX.Y.Z.md` carries a `## Highlights`
    section. Merging is the ship signal.
 2. `auto-release.yml` sees an untagged VERSION on `main` and pushes `vX.Y.Z`
-   at the merged head with the `RELEASE_PAT` identity. Squash merges change
+   at the merged head as the release App (see Release identity below). Squash merges change
    the sha, so the tag goes at the merged head, never at a local commit.
 3. `release.yml` requires the tag on `main`, equal to VERSION, on a commit
    whose CI runs are green, then stages a **draft** release titled
@@ -73,18 +73,30 @@ reaches every installed client; and dispatching the publish, because it fires
 the outward announce and auto-dispatching a privileged publish from another
 repository is how release loops start.
 
-### Without `RELEASE_PAT`
+### Release identity
 
-`auto-release.yml` skips with a notice naming the tag to push, and the manual
-flow is unchanged: push `vX.Y.Z` at the merged main sha yourself, dispatch
-`release.yml` with the tag (or run `gh release create vX.Y.Z --draft
---verify-tag --title "<plugin> vX.Y.Z" --notes-file docs/release-notes/vX.Y.Z.md`),
-wait for or merge the reconciler's card PR, then publish from your own
-identity with `gh release edit vX.Y.Z --draft=false --latest`. A
-`GITHUB_TOKEN` publish raises no release event, so the train would never
-announce; that is why `publish-staged-release.yml` refuses without the secret.
-Branch names must never be tag-shaped (`vX.Y.Z` as a branch collides with the
-tag in `actions/checkout` ref resolution — issue #49).
+The tag push and the publish must come from an identity whose events trigger
+workflows; `GITHUB_TOKEN` events are suppressed by GitHub's recursion rule, so
+a tag or publish made with it leaves `release.yml` and the release train dead.
+The identity is the GitHub App **StartupBros HOV Release**: contents write
+only, installed on the catalog plugin repositories only, and minted per run as
+a short-lived installation token scoped to the current repository. Its
+credentials are the organization Actions secrets `HOV_RELEASE_APP_ID` and
+`HOV_RELEASE_APP_PRIVATE_KEY`, visible to the plugin repositories only. A
+`RELEASE_PAT` repository secret still works as a fallback (pro-gate's original
+shape). Adding a new plugin to the catalog means adding its repository to the
+App installation and to both secrets' repository lists.
+
+Without either identity, `auto-release.yml` skips with a notice naming the tag
+to push, and the manual flow is unchanged: push `vX.Y.Z` at the merged main
+sha yourself, dispatch `release.yml` with the tag (or run `gh release create
+vX.Y.Z --draft --verify-tag --title "<plugin> vX.Y.Z" --notes-file
+docs/release-notes/vX.Y.Z.md`), wait for or merge the reconciler's card PR,
+then publish from your own identity with `gh release edit vX.Y.Z
+--draft=false --latest`; `publish-staged-release.yml` refuses without an
+identity for the reason above. Branch names must never be tag-shaped
+(`vX.Y.Z` as a branch collides with the tag in `actions/checkout` ref
+resolution — issue #49).
 
 ## Release notes: lead with `## Highlights`
 
