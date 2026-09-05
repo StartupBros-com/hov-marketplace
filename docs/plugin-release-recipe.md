@@ -25,24 +25,29 @@ outside Claude Code degrades a little further. Keep descriptions lean.
 
 ## The order
 
-1. Land the version bump in the plugin repo **through a PR**, then note the
-   MERGED main sha. A repo with a required-checks ruleset declines a direct
-   push to main outright (papercut gained `require-ci` on 2026-09-01; the
-   v0.1.8 push was refused with GH013 after tests, vendor and bump had
-   already run), and a squash merge changes the sha — so the tag goes at
-   the merged head, never at the local release commit. Push `vX.Y.Z` as a
-   tag at that sha before the card validates: a draft mints no tag ref and
-   `validate-marketplace.sh` requires one that resolves to the pinned commit.
-2. `gh release create vX.Y.Z --repo StartupBros-com/<plugin> --target main --draft --title "<plugin> vX.Y.Z" --notes "..."` — the draft's id is the
-   `releaseId` for the card. Branch names must never be tag-shaped
-   (`vX.Y.Z` as a branch collides with the tag in `actions/checkout` ref
-   resolution — issue #49).
-3. Marketplace PR: card `sha` = the plugin main sha, `version`, `releaseId`
-   (from the draft), `releaseTag` = `vX.Y.Z`. Merge it, validator green.
-4. Publish the draft (`gh release edit vX.Y.Z --draft=false`). The single
-   publish-event announce finds the card current — no re-fire needed.
-5. Verify the `#tool-drops` message from the exact run log, not the workflow's
-   conclusion (a not-listed skip also reports success):
+Since 2026-09 every catalog plugin carries three identical workflows (pattern
+from pro-gate, generalized in hov-marketplace#118): `auto-release.yml`,
+`release.yml` and `publish-staged-release.yml`. With them, a release is:
+
+1. Land the version bump in the plugin repo **through a PR**: VERSION and
+   `.claude-plugin/plugin.json` move together (the CI contract rejects a
+   mismatch), and `docs/release-notes/vX.Y.Z.md` carries a `## Highlights`
+   section. Merging is the ship signal.
+2. `auto-release.yml` sees an untagged VERSION on `main` and pushes `vX.Y.Z`
+   at the merged head with the `RELEASE_PAT` identity. Squash merges change
+   the sha, so the tag goes at the merged head, never at a local commit.
+3. `release.yml` requires the tag on `main`, equal to VERSION, on a commit
+   whose CI runs are green, then stages a **draft** release titled
+   `<plugin> vX.Y.Z` from the notes file (auto-notes with a warning if the
+   file is missing or has no usable Highlights).
+4. `repin-reconcile` here sees the draft within the hour and opens the card
+   PR (version, tag, releaseId, sha). Review and merge it; the validator
+   resolves the tag to the pinned commit.
+5. Dispatch `Publish staged release` in the plugin repo with the tag. It
+   refuses until the live card names that exact release, then flips the
+   draft to published with `--latest`. The single publish event announces.
+6. Verify the `#tool-drops` message from the exact run log, not the
+   workflow's conclusion (a not-listed skip also reports success):
 
    ```bash
    gh run list --repo StartupBros-com/<plugin> --workflow "Release train" --limit 8 \
@@ -50,20 +55,36 @@ outside Claude Code degrades a little further. Keep descriptions lean.
      --jq '.[] | select(.displayTitle=="<plugin> v<version>") | "\(.databaseId) \(.status) \(.createdAt)"'
    gh run view <run-id> --repo StartupBros-com/<plugin> --log \
      | grep -E '"status":"announced"|does not yet list'
+   ```
 
    Select the run by its display title and a creation time after the publish
    (never "newest completed": that printed the previous release's receipt once),
    and inline the title in the filter: the GitHub CLI's `--jq` takes no `--arg`,
-   and a retry loop around that error runs forever. papercut ships this whole
-   step as `scripts/release/release-finish.sh`, with the release PR step as
-   `scripts/release/release-pr.sh`; both are idempotent and parameterized by
-   version.
-   ```
+   and a retry loop around that error runs forever.
 
    `{"status":"announced","messageId":"…"}` is the terminal proof. A
    `does not yet list` notice means no post happened, even when GitHub paints
    the run green. Repeated edits may return the same message ID because the
    service updates the existing card instead of posting a duplicate.
+
+Two steps stay human on purpose: merging the card PR, because a standing
+credential that writes this manifest unattended is the one whose compromise
+reaches every installed client; and dispatching the publish, because it fires
+the outward announce and auto-dispatching a privileged publish from another
+repository is how release loops start.
+
+### Without `RELEASE_PAT`
+
+`auto-release.yml` skips with a notice naming the tag to push, and the manual
+flow is unchanged: push `vX.Y.Z` at the merged main sha yourself, dispatch
+`release.yml` with the tag (or run `gh release create vX.Y.Z --draft
+--verify-tag --title "<plugin> vX.Y.Z" --notes-file docs/release-notes/vX.Y.Z.md`),
+wait for or merge the reconciler's card PR, then publish from your own
+identity with `gh release edit vX.Y.Z --draft=false --latest`. A
+`GITHUB_TOKEN` publish raises no release event, so the train would never
+announce; that is why `publish-staged-release.yml` refuses without the secret.
+Branch names must never be tag-shaped (`vX.Y.Z` as a branch collides with the
+tag in `actions/checkout` ref resolution — issue #49).
 
 ## Release notes: lead with `## Highlights`
 
