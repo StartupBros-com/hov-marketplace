@@ -15,9 +15,11 @@ name: Repin reconcile
 # repository — including this repository's GITHUB_TOKEN. So the reads use a
 # short-lived token minted from the org's least-privilege release App
 # (HOV_RELEASE_APP_ID + HOV_RELEASE_APP_PRIVATE_KEY, contents read/write on the
-# plugin repositories only), downscoped here to contents: read. Without those
-# secrets the job falls back to GITHUB_TOKEN and can only see published releases.
-# Still no cross-repo WRITE credential anywhere in this workflow.
+# plugin repositories only). The token must carry contents: write because GitHub
+# shows drafts only to push-capable identities; this workflow only READS with it,
+# and it expires with the job. Without those secrets the job falls back to
+# GITHUB_TOKEN and can only see published releases. The manifest write remains
+# local: a branch and a PR in this repository, reviewed by a human.
 
 on:
   schedule:
@@ -62,9 +64,12 @@ jobs:
             echo "::warning::release App secrets are not visible to this repository; reads use GITHUB_TOKEN and cannot see staged DRAFT releases, so draft-first repins will not be opened automatically."
           fi
 
-      # Read-only, plugin-repositories-only token: enough to list releases (drafts included),
-      # resolve tags and compare refs. The App itself holds no permission on this repository.
-      - name: Mint a read-only release App token for the plugin repositories
+      # Plugin-repositories-only token. GitHub lists another repository's DRAFT releases only
+      # to identities with push access, so the token must carry contents: write even though
+      # this workflow only reads with it (verified 2026-09-06: a contents: read token saw no
+      # draft and reported "already matches"). It lives for this job, is scoped to the nine
+      # plugin repositories, and the App itself holds no permission on this repository.
+      - name: Mint a release App token for the plugin repositories (draft-visible)
         if: steps.identity.outputs.have_app == 'true'
         id: app
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
@@ -73,7 +78,7 @@ jobs:
           private-key: ${{ secrets.HOV_RELEASE_APP_PRIVATE_KEY }}
           owner: StartupBros-com
           repositories: harness-vet,token-eater,skill-tuner,wsl-cdp,memory-dream,design-rails,rent-check,papercut,pro-gate
-          permission-contents: read
+          permission-contents: write
           permission-metadata: read
 
       - name: Reconcile the manifest against released plugins
