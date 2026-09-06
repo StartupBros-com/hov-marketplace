@@ -34,7 +34,7 @@ emit() { if [ -n "\$jqexpr" ]; then jq -r "\$jqexpr"; else cat; fi; }
 case "\$path" in
   repos/acme/widget/releases*) emit < "\$FIX/releases.json" ;;
   repos/acme/widget/git/ref/tags/*) emit < "\$FIX/tagref.json" ;;
-  repos/acme/widget/compare/*) printf '{"status":"$1"}\n' | emit ;;
+  repos/acme/widget/compare/*) if [ "$1" = FAIL ]; then printf '{"message":"rate limited"}\n' >&2; exit 1; fi; printf '{"status":"$1"}\n' | emit ;;
   repos/acme/widget) printf '{"default_branch":"main"}\n' | emit ;;
   *) printf 'unexpected gh api: %s\n' "\$path" >&2; exit 1 ;;
 esac
@@ -121,5 +121,17 @@ run_reconcile "$TMP/side.json" >"$TMP/out5" || die 'reconciler failed on a diver
 diff -q "$TMP/side.orig.json" "$TMP/side.json" >/dev/null \
   || die 'a tag off the default branch was pinned into the manifest'
 pass 'a tag that is not on the default branch is never pinned'
+
+# --- a compare read failure is a failure, not a skip -------------------------
+write_gh_stub FAIL
+make_manifest '1.0.0' 'v1.0.0' 800 "$OLD_SHA" "$TMP/readfail.json"
+cp "$TMP/readfail.json" "$TMP/readfail.orig.json"
+if run_reconcile "$TMP/readfail.json" >"$TMP/out6"; then
+  die 'a failed compare read was treated as success'
+fi
+grep -q 'could not compare' "$TMP/err" || die 'compare read failure was not named'
+diff -q "$TMP/readfail.orig.json" "$TMP/readfail.json" >/dev/null \
+  || die 'a failed compare read modified the manifest'
+pass 'a compare read failure exits nonzero and leaves the manifest untouched'
 
 printf '%s repin reconcile checks passed\n' "$PASS"
