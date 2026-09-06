@@ -131,11 +131,18 @@ while IFS= read -r name; do
   fi
   default_branch="$(gh api "repos/$repo" --jq '.default_branch' 2>/dev/null)" \
     || fail "could not read the default branch of $repo"
-  if ! gh api "repos/$repo/compare/${default_branch}...${sha}" --jq '.status' 2>/dev/null \
-       | grep -qE '^(identical|behind)$'; then
-    printf 'skip %s: %s (%s) is not an ancestor of %s\n' "$name" "$tag" "${sha:0:8}" "$default_branch" >&2
-    continue
-  fi
+  # A failed compare read (403, 429, 5xx) is a read failure, never a verdict: it must exit
+  # nonzero rather than fall into the not-an-ancestor branch and let the run report
+  # "already matches" over a release it never actually checked.
+  compare_status="$(gh api "repos/$repo/compare/${default_branch}...${sha}" --jq '.status' 2>/dev/null)" \
+    || fail "could not compare $tag (${sha:0:8}) against $default_branch in $repo"
+  case "$compare_status" in
+    identical|behind) ;;
+    *)
+      printf 'skip %s: %s (%s) is not an ancestor of %s (compare status: %s)\n' \
+        "$name" "$tag" "${sha:0:8}" "$default_branch" "${compare_status:-empty}" >&2
+      continue ;;
+  esac
 
   card_version="$(jq -r '.metadata.version // ""' <<<"$card")"
   card_tag="$(jq -r '.metadata.releaseTag // ""' <<<"$card")"
