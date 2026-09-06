@@ -9,10 +9,15 @@ name: Repin reconcile
 # compromise reaches every installed client. What changes is only who does the
 # typing.
 #
-# The write is local — a branch and a PR in THIS repository — and the reads are
-# public release metadata. That inversion is deliberate: doing the same job from
-# a plugin repo would need a cross-repo write credential, which is precisely what
-# made this manual. No new secret is introduced by this workflow.
+# The write is local — a branch and a PR in THIS repository. The reads are release
+# metadata on the plugin repositories. Draft-first means the release that needs
+# pinning is a DRAFT, and drafts are invisible to any token without push on that
+# repository — including this repository's GITHUB_TOKEN. So the reads use a
+# short-lived token minted from the org's least-privilege release App
+# (HOV_RELEASE_APP_ID + HOV_RELEASE_APP_PRIVATE_KEY, contents read/write on the
+# plugin repositories only), downscoped here to contents: read. Without those
+# secrets the job falls back to GITHUB_TOKEN and can only see published releases.
+# Still no cross-repo WRITE credential anywhere in this workflow.
 
 on:
   schedule:
@@ -44,10 +49,37 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Decide whether the release App is available for draft-visible reads
+        id: identity
+        env:
+          HOV_RELEASE_APP_ID: ${{ secrets.HOV_RELEASE_APP_ID }}
+          HOV_RELEASE_APP_PRIVATE_KEY: ${{ secrets.HOV_RELEASE_APP_PRIVATE_KEY }}
+        run: |
+          if [ -n "$HOV_RELEASE_APP_ID" ] && [ -n "$HOV_RELEASE_APP_PRIVATE_KEY" ]; then
+            echo "have_app=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "have_app=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::release App secrets are not visible to this repository; reads use GITHUB_TOKEN and cannot see staged DRAFT releases, so draft-first repins will not be opened automatically."
+          fi
+
+      # Read-only, plugin-repositories-only token: enough to list releases (drafts included),
+      # resolve tags and compare refs. The App itself holds no permission on this repository.
+      - name: Mint a read-only release App token for the plugin repositories
+        if: steps.identity.outputs.have_app == 'true'
+        id: app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.HOV_RELEASE_APP_ID }}
+          private-key: ${{ secrets.HOV_RELEASE_APP_PRIVATE_KEY }}
+          owner: StartupBros-com
+          repositories: harness-vet,token-eater,skill-tuner,wsl-cdp,memory-dream,design-rails,rent-check,papercut,pro-gate
+          permission-contents: read
+          permission-metadata: read
+
       - name: Reconcile the manifest against released plugins
         id: reconcile
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app.outputs.token || github.token }}
           ONLY_PLUGIN: ${{ inputs.only_plugin }}
           PLAN_FILE: ${{ runner.temp }}/repin-plan.tsv
         run: |
