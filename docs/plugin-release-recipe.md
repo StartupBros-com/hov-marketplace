@@ -85,7 +85,19 @@ credentials are the organization Actions secrets `HOV_RELEASE_APP_ID` and
 `HOV_RELEASE_APP_PRIVATE_KEY`, visible to the plugin repositories only. A
 `RELEASE_PAT` repository secret still works as a fallback (pro-gate's original
 shape). Adding a new plugin to the catalog means adding its repository to the
-App installation and to both secrets' repository lists.
+App installation, to both secrets' repository lists, and to the `repositories:`
+list in this repo's `repin-reconcile.yml`.
+
+The card PR is opened by a second App, **StartupBros HOV Marketplace Bot**:
+contents and pull-request write on this repository only, never merge, secrets
+`HOV_MARKETPLACE_APP_ID` and `HOV_MARKETPLACE_APP_PRIVATE_KEY` visible to this
+repository only. Two facts force the split: GitHub shows another repository's
+draft releases only to push-capable identities, so the reconciler reads with a
+release-App token; and this organization keeps GitHub's default that forbids
+`GITHUB_TOKEN` from creating pull requests, so the PR needs an App identity of
+its own (an App-opened PR also runs the validator without the approval gate a
+`GITHUB_TOKEN`-opened PR sits behind). Without the bot secrets the reconciler
+still pushes the repin branch and names the PR to open by hand.
 
 Without either identity, `auto-release.yml` skips with a notice naming the tag
 to push, and the manual flow is unchanged: push `vX.Y.Z` at the merged main
