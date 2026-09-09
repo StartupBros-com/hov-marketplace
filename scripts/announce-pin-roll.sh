@@ -1,60 +1,72 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# announce-pin-roll.sh — move every catalog plugin's announce pin to a new helper sha.
+# announce-pin-roll.sh — rewrite every catalog plugin's announce pin to a new helper sha.
 #
 # The companion to announce-pin-drift.sh: that one answers "is the fleet current", this one
-# makes it so. Drift is reported by CI; rolling is deliberate and runs on an operator's or
-# an agent's own credentials, so there is no workflow for it and no standing token anywhere.
+# performs the edit. It edits files and stops. Committing, pushing and opening PRs stays
+# with the caller, deliberately: an earlier draft did all three across nine repositories on
+# a bare `git add -u`, which sweeps every locally-modified tracked file — a colleague's WIP
+# included — into a commit titled "pin the announce workflow". The encoded knowledge here
+# is the transformation, not the git.
 #
 # WHAT IT ENCODES
 #
-# Rolling this by hand on 2026-09-09 took two passes, because the change is not "sed the
-# sha". Four things bite, and each is a case in tests/announce-pin-roll.test.sh:
+# Rolling this by hand on 2026-09-09 took two passes and produced four red PRs, because the
+# change is not "sed the sha". Each trap below is a case in tests/announce-pin-roll.test.sh:
 #
 #   1. Two shas move, not one. The hardened slot takes the new pin AND the retired slot
 #      takes the pin just superseded, so the mutant that slot seeds still means "reverting
 #      to the previous pin is rejected". Done naively -- replace(prev,old) then
-#      replace(old,new) -- the second pass promotes the value the first just retired and
-#      both slots collapse onto the new sha. Staged behind a sentinel instead.
-#   2. The `uses:` line carries a trailing comment describing what that pin CHANGED. Move
-#      the sha and leave the comment, and it advertises the superseded commit's fix against
-#      the new sha: a comment asserting something the pinned code is not.
+#      replace(old,new) -- the second pass promotes what the first just retired and both
+#      slots collapse onto the new sha. Staged behind a sentinel instead.
+#   2. The `uses:` line's trailing comment describes what that pin CHANGED, so it moves
+#      with the sha or it advertises the superseded commit's fix against the new one.
 #   3. That comment cannot be anchored to the sha. Several repos assert the workflow file
-#      BYTE-FOR-BYTE and build the `uses:` line by interpolation (Python f-string, JS
-#      template literal), so the text reads `@{HARDENED_SHA} # fix: ...`; an anchor of
-#      "<literal-sha> # fix: ..." matches nothing and leaves the note stale. Those
-#      byte-for-byte assertions then fail in CI rather than locally.
-#   4. It is not always release-train.yml. papercut also pins the announce workflow from
-#      ci.yml, so every tracked file that mentions either sha is scanned.
+#      BYTE-FOR-BYTE and build the line by interpolation (`@{HARDENED_SHA} # fix: ...`),
+#      where a "<literal-sha> # fix: ..." anchor matches nothing and the note stays stale.
+#   4. It is not always release-train.yml -- papercut also pins from ci.yml.
 #
-# Modes, least to most:
-#   (default)  dry run: report every file that would change, write nothing
-#   --apply    rewrite the files in the local clones, stop before git
-#   --ship     rewrite, commit, push and open a PR in each repo
+# WHAT IT REFUSES
+#
+# Every ambiguity is a refusal, never a silent pass. A checkout whose freshness cannot be
+# verified, a repository pinning two different shas, and a pin that is neither the old nor
+# the new sha are all reported and counted; none is quietly folded into "already rolled".
+# That last one matters most: a consumer more than one hop behind mentions neither sha, and
+# an earlier draft printed "already rolled" for it — a clean summary for a repository the
+# drift check still calls broken.
 #
 # Exit codes:
-#   0  nothing to do, or the requested work completed
-#   1  a read, parse or write failure — NEVER interpreted as "nothing to do"
+#   0  every consumer is rolled or already current
+#   1  at least one consumer was refused, or a read/parse failure
 
 fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
 usage() {
   cat >&2 <<'USAGE'
-usage: announce-pin-roll.sh --old <sha> --new <sha> [--prev <sha>]
+usage: announce-pin-roll.sh --old <sha40> --new <sha40> [--prev <sha40>]
                             [--old-note TEXT --new-note TEXT]
-                            [--apply | --ship] [--only PLUGIN] [--root DIR]
+                            [--apply] [--only PLUGIN] [--root DIR]
 
   --old   the pin consumers currently carry (becomes the retired slot)
   --new   the pin they should carry
-  --prev  the sha currently sitting in the retired slot, if any
-  --old-note / --new-note  trailing comment on the `uses:` line, if the repos carry one
+  --prev  the sha currently sitting in the retired slot, if the repos keep one
+  --old-note / --new-note  trailing comment on the `uses:` line, if they carry one
+  --apply rewrite files; without it this is a dry run that writes nothing
+
+Commit, push and open the PRs yourself; this only edits.
 USAGE
   exit 2
 }
 
+# A pin must be a full 40-character sha. Abbreviations are refused rather than accepted:
+# the rewrite is a plain substring replace, so a 7-character value would also match inside
+# any longer hex string that shares its prefix -- a docker digest, an unrelated commit
+# reference -- and corrupt it with no error.
+valid_sha() { case "$1" in *[!0-9a-f]*) return 1 ;; esac; [ "${#1}" -eq 40 ]; }
+
 # Rewrite one file's pin references, in place. Pure with respect to everything but this
-# file, so the tests drive it directly against fixtures. Prints the path when it changed.
+# file, so the tests drive it directly. Prints the path when it changed something.
 rewrite_pin_file() { # <file> <prev> <old> <new> <old-note> <new-note>
   python3 - "$@" <<'PY'
 import sys
@@ -63,14 +75,6 @@ from pathlib import Path
 path, prev, old, new, old_note, new_note = sys.argv[1:7]
 p = Path(path)
 s = p.read_text(encoding="utf-8")
-
-# Already rolled? Stop. Both the rolled and unrolled states contain `old` -- unrolled as
-# the hardened pin, rolled as the retired one -- so presence of `old` cannot tell them
-# apart, and running again would rewrite the RETIRED slot to `new` and collapse both onto
-# it. `new` is a fresh sha nothing references until the roll, so it is the discriminator.
-# This matters because a roll across nine repositories is interruptible.
-if new in s:
-    raise SystemExit(0)
 
 # The retirement is staged behind a sentinel: replacing prev->old and then old->new in
 # sequence would promote the value just retired, collapsing both slots onto the new sha.
@@ -94,6 +98,33 @@ if out != s:
 PY
 }
 
+# Which files a roll must touch, given the sha the repository is actually pinned to.
+#
+# File-level presence cannot decide this. A correctly rolled file that keeps a retired slot
+# holds BOTH shas -- new as hardened, old as retired -- so "contains old" and "contains
+# new" are both true of a finished repository. The pin is what disambiguates:
+#
+#   pin == old  the repository is unrolled; everything mentioning old or prev is in scope
+#   pin == new  the workflow is already rolled, so only a file still carrying `prev` has an
+#               unfinished retired slot -- the interrupted-roll case
+#
+# This also disposes of the taint case: a workflow whose pin is still old but which happens
+# to mention the new sha elsewhere is selected on its pin, and the unrelated mention is
+# left exactly as it is.
+roll_candidates() { # <dir> <pin> <prev> <old> <new>
+  local dir="$1" pin="$2" prev="$3" old="$4" new="$5"
+  if [ "$pin" = "$new" ]; then
+    [ -n "$prev" ] || return 0
+    git -C "$dir" grep -l -F -e "$prev" -- . 2>/dev/null || true
+    return 0
+  fi
+  if [ -n "$prev" ]; then
+    git -C "$dir" grep -l -F -e "$old" -e "$prev" -- . 2>/dev/null || true
+  else
+    git -C "$dir" grep -l -F -e "$old" -- . 2>/dev/null || true
+  fi
+}
+
 # owner/repo from a canonical card source url, refused rather than guessed — the same rule
 # as repin-reconcile and announce-pin-drift.
 repo_from_url() {
@@ -103,24 +134,19 @@ repo_from_url() {
   case "$path" in */*/*|'') return 1 ;; */*) printf '%s\n' "$path" ;; *) return 1 ;; esac
 }
 
-ship_one() { # <dir> <owner/repo> <branch> <new-sha>
-  local dir="$1" repo="$2" branch="$3" new="$4"
-  git -C "$dir" add -u
-  git -C "$dir" commit -q -m "ci(release-train): pin the announce workflow to $new
-
-The reusable workflow checks its helper out at ref: \${{ job.workflow_sha }}, so a fix on
-hov-marketplace main is inert here until this pin moves." || return 1
-  git -C "$dir" push -q origin "HEAD:refs/heads/$branch" || return 1
-  gh pr create --repo "$repo" --head "$branch" --base main \
-    --title "ci(release-train): pin the announce workflow to $new" \
-    --body "Rolled by \`scripts/announce-pin-roll.sh\` in hov-marketplace. The reusable announce workflow checks its helper out at \`ref: \${{ job.workflow_sha }}\`, so a fix on marketplace main is inert in this repository until this pin moves." \
-    >/dev/null 2>&1 || return 1
+# Every announce pin a checkout carries, deduplicated. Scans the whole workflows directory
+# rather than assuming release-train.yml, and is what lets this agree with the drift check
+# about which sha a repository is actually on.
+checkout_pins() { # <dir>
+  local dir="$1"
+  [ -d "$dir/.github/workflows" ] || return 0
+  grep -rhoE 'hov-tool-drop-announce\.yml@[0-9a-f]{40}' "$dir/.github/workflows" 2>/dev/null \
+    | sed 's/.*@//' | sort -u
 }
 
 main() {
   local MANIFEST="${MANIFEST:-.claude-plugin/marketplace.json}"
   local ROOT="${ROOT:-$HOME/SITES}"
-  local BRANCH="${BRANCH:-bump-announce-pin}"
   local MODE=report ONLY="" PREV_SHA="" OLD_SHA="" NEW_SHA="" OLD_NOTE="" NEW_NOTE=""
 
   while [ $# -gt 0 ]; do
@@ -133,18 +159,24 @@ main() {
       --only) ONLY="${2:-}"; shift 2 ;;
       --root) ROOT="${2:-}"; shift 2 ;;
       --apply) MODE=apply; shift ;;
-      --ship) MODE=ship; shift ;;
       -h|--help) usage ;;
       *) printf 'unknown argument: %s\n' "$1" >&2; usage ;;
     esac
   done
 
   [ -n "$OLD_SHA" ] && [ -n "$NEW_SHA" ] || usage
-  case "$OLD_SHA$NEW_SHA$PREV_SHA" in *[!0-9a-f]*) fail "shas must be lowercase hex" ;; esac
+  valid_sha "$OLD_SHA" || fail "--old must be 40 lowercase hex characters"
+  valid_sha "$NEW_SHA" || fail "--new must be 40 lowercase hex characters"
+  [ -z "$PREV_SHA" ] || valid_sha "$PREV_SHA" || fail "--prev must be 40 lowercase hex characters"
   [ "$OLD_SHA" != "$NEW_SHA" ] || fail "--old and --new are the same sha"
+  # prev == old makes the sentinel dance a round trip -- every `old` is masked as retired,
+  # nothing is left for old->new, and the mask is restored: a silent whole-file no-op.
+  [ -z "$PREV_SHA" ] || [ "$PREV_SHA" != "$OLD_SHA" ] || fail "--prev and --old are the same sha"
+  [ -z "$PREV_SHA" ] || [ "$PREV_SHA" != "$NEW_SHA" ] || fail "--prev and --new are the same sha"
   [ -s "$MANIFEST" ] || fail "manifest not found: $MANIFEST"
 
-  local touched=0 skipped=0 url repo name dir files changed rel c
+  local rolled=0 current=0 refused=0
+  local url repo name dir pins pin_count pin rel changed c candidates
   while IFS= read -r url; do
     [ -n "$url" ] || continue
     repo="$(repo_from_url "$url")" || fail "unresolvable source url: $url"
@@ -153,46 +185,54 @@ main() {
 
     dir="$ROOT/$name"
     if [ ! -d "$dir/.git" ]; then
-      printf '%-16s SKIP no clone at %s\n' "$name" "$dir"
-      skipped=$((skipped + 1)); continue
+      printf '%-16s REFUSED  no clone at %s\n' "$name" "$dir"
+      refused=$((refused + 1)); continue
     fi
 
-    # A local checkout is not current-state truth. These clones are launch pads and drift
-    # behind origin/main routinely -- pro-gate's sat 8 commits back the day this was
-    # written, still showing the superseded pin. Editing that working tree would diff
-    # against stale content and quietly reintroduce it. Refuse instead of guessing: the
-    # drift check already says what needs rolling, so a skipped repo is visible, not lost.
-    git -C "$dir" fetch origin --quiet 2>/dev/null || true
+    # A local checkout is not current-state truth -- these are launch pads and drift behind
+    # origin/main routinely. Editing a stale working tree diffs against outdated content
+    # and quietly reintroduces it. The fetch's own exit status is checked: swallowing it
+    # would leave origin/main pointing at whatever was fetched last, and the ancestry test
+    # below would then pass against stale data, which is a guard that cannot fail.
+    if ! git -C "$dir" fetch origin --quiet 2>/dev/null; then
+      printf '%-16s REFUSED  could not fetch; freshness unverifiable\n' "$name"
+      refused=$((refused + 1)); continue
+    fi
     if ! git -C "$dir" merge-base --is-ancestor origin/main HEAD 2>/dev/null; then
-      printf '%-16s SKIP checkout does not contain origin/main; refusing to edit stale content\n' "$name"
-      skipped=$((skipped + 1)); continue
+      printf '%-16s REFUSED  checkout does not contain origin/main\n' "$name"
+      refused=$((refused + 1)); continue
     fi
 
-    # Only files that already mention one of the shas are considered; nothing else is read
-    # or written.
-    if [ -n "$PREV_SHA" ]; then
-      files="$(git -C "$dir" grep -l -e "$OLD_SHA" -e "$PREV_SHA" -- . 2>/dev/null || true)"
-    else
-      files="$(git -C "$dir" grep -l -e "$OLD_SHA" -- . 2>/dev/null || true)"
+    # Classify by the pin the checkout actually carries, so this and the drift check never
+    # disagree about a repository's state.
+    pins="$(checkout_pins "$dir")"
+    pin_count="$(printf '%s' "$pins" | grep -c . || true)"
+    if [ "$pin_count" -eq 0 ]; then
+      printf '%-16s ok       does not pin the announce workflow\n' "$name"; continue
     fi
-    # A rolled repository still mentions `old` -- in its RETIRED slot -- so the grep above
-    # cannot tell rolled from unrolled on its own. Drop anything already carrying `new`,
-    # the same discriminator rewrite_pin_file uses, so report mode does not claim work
-    # that apply mode would then correctly decline to do.
-    if [ -n "$files" ]; then
-      files="$(printf '%s\n' "$files" | while IFS= read -r rel; do
-        [ -n "$rel" ] || continue
-        grep -qF "$NEW_SHA" "$dir/$rel" 2>/dev/null || printf '%s\n' "$rel"
-      done)"
+    if [ "$pin_count" -gt 1 ]; then
+      printf '%-16s REFUSED  pins %s different shas: %s\n' "$name" "$pin_count" "$(printf '%s' "$pins" | tr '\n' ' ')"
+      refused=$((refused + 1)); continue
     fi
-    if [ -z "$files" ]; then
-      printf '%-16s ok   already rolled, or does not pin the announce workflow\n' "$name"
+    pin="$pins"
+    if [ "$pin" != "$OLD_SHA" ] && [ "$pin" != "$NEW_SHA" ]; then
+      printf '%-16s REFUSED  pinned to %s, which is neither --old nor --new\n' "$name" "${pin:0:7}"
+      refused=$((refused + 1)); continue
+    fi
+
+    candidates="$(roll_candidates "$dir" "$pin" "$PREV_SHA" "$OLD_SHA" "$NEW_SHA")"
+    if [ -z "$candidates" ]; then
+      if [ "$pin" = "$NEW_SHA" ]; then
+        printf '%-16s ok       already rolled\n' "$name"; current=$((current + 1))
+      else
+        printf '%-16s ok       nothing to rewrite\n' "$name"
+      fi
       continue
     fi
 
     if [ "$MODE" = report ]; then
-      printf '%-16s would rewrite: %s\n' "$name" "$(printf '%s' "$files" | tr '\n' ' ')"
-      touched=$((touched + 1)); continue
+      printf '%-16s would rewrite: %s\n' "$name" "$(printf '%s' "$candidates" | tr '\n' ' ')"
+      rolled=$((rolled + 1)); continue
     fi
 
     changed=""
@@ -200,24 +240,20 @@ main() {
       [ -n "$rel" ] || continue
       c="$(rewrite_pin_file "$dir/$rel" "$PREV_SHA" "$OLD_SHA" "$NEW_SHA" "$OLD_NOTE" "$NEW_NOTE")"
       [ -z "$c" ] || changed="$changed $rel"
-    done <<<"$files"
+    done <<<"$candidates"
 
     if [ -z "$changed" ]; then
-      printf '%-16s ok   no change after rewrite\n' "$name"; continue
+      printf '%-16s ok       no change after rewrite\n' "$name"; continue
     fi
     printf '%-16s rewrote:%s\n' "$name" "$changed"
-    touched=$((touched + 1))
-
-    [ "$MODE" = ship ] || continue
-    if ship_one "$dir" "$repo" "$BRANCH" "$NEW_SHA"; then
-      printf '%-16s PR opened\n' "$name"
-    else
-      printf '%-16s SKIP could not commit, push or open a PR\n' "$name"
-    fi
+    rolled=$((rolled + 1))
   done < <(jq -r '.plugins[]? | .source.url // empty' "$MANIFEST")
 
-  printf '\n%s consumer(s) affected, %s skipped (no clone, or checkout not current)\n' "$touched" "$skipped"
-  [ "$MODE" != report ] || printf 'dry run: nothing written. Re-run with --apply or --ship.\n'
+  printf '\n%s to roll or rolled, %s already current, %s refused\n' "$rolled" "$current" "$refused"
+  if [ "$MODE" = report ]; then
+    printf 'dry run: nothing written. Re-run with --apply, then commit and open the PRs yourself.\n'
+  fi
+  [ "$refused" -eq 0 ]
 }
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
