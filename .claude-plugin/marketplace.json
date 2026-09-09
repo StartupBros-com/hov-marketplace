@@ -36,13 +36,13 @@
       "source": {
         "source": "url",
         "url": "https://github.com/StartupBros-com/pro-gate.git",
-        "sha": "96590c19922d54745cdbe933d985679ab8f740f7"
+        "sha": "b06086431ab68abbe48f15a2753b0e8b6c8d3c00"
       },
       "description": "Run a final pull request review using the Pro model selected by your ChatGPT account, with guided runtime setup and no automatic merge.",
       "metadata": {
-        "version": "0.40.0",
-        "releaseId": 383048135,
-        "releaseTag": "v0.40.0"
+        "version": "0.41.0",
+        "releaseId": 385220838,
+        "releaseTag": "v0.41.0"
       },
       "card": {
         "rows": [
@@ -147,13 +147,13 @@
       "source": {
         "source": "url",
         "url": "https://github.com/StartupBros-com/harness-vet.git",
-        "sha": "646e4c0ede7ec1e7626a0f116ae6157658a35bae"
+        "sha": "1dfaaca7b767ce89863044c4af62c68a2a9dd786"
       },
       "description": "Adoption gate for external agent tooling. /harness-vet deep-dives a skill, plugin, MCP server, repo, or paper against YOUR harness: a candidate can be skip globally and adopt in one project, with artifact safety judged once and utility, reachable incumbents and context cost judged per target \u2014 claims verified by running them, placement and activation verified on the live host, and an audit dividend that often outvalues the verdict.",
       "metadata": {
-        "version": "0.2.1",
-        "releaseId": 383411345,
-        "releaseTag": "v0.2.1"
+        "version": "0.2.3",
+        "releaseId": 384400044,
+        "releaseTag": "v0.2.3"
       },
       "card": {
         "rows": [
