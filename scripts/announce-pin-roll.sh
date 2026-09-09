@@ -164,7 +164,7 @@ main() {
     esac
   done
 
-  [ -n "$OLD_SHA" ] && [ -n "$NEW_SHA" ] || usage
+  if [ -z "$OLD_SHA" ] || [ -z "$NEW_SHA" ]; then usage; fi
   valid_sha "$OLD_SHA" || fail "--old must be 40 lowercase hex characters"
   valid_sha "$NEW_SHA" || fail "--new must be 40 lowercase hex characters"
   [ -z "$PREV_SHA" ] || valid_sha "$PREV_SHA" || fail "--prev must be 40 lowercase hex characters"
