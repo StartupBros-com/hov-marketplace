@@ -207,6 +207,28 @@
         ],
         "run": "Then let the hook collect for a few days and run `/papercut`"
       }
+    },
+    {
+      "name": "product-video",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/StartupBros-com/product-video.git",
+        "sha": "9aa8637fbe4f48be9bc5388c55b747a4bfd7415b"
+      },
+      "description": "Agent-native product walkthrough videos. Capture a real authenticated browser tour over CDP at a forced 16:9 geometry so a tall operator window cannot letterbox the recording, overlay a real cursor driven by telemetry that carries no URLs, DOM text, or account data, compose in Remotion, and render a digest-bound H.264 you can verify frame by frame.",
+      "metadata": {
+        "version": "0.1.0",
+        "releaseId": 385914492,
+        "releaseTag": "v0.1.0"
+      },
+      "card": {
+        "rows": [
+          "\ud83c\udfac **A real browser tour, not a slideshow** \u00b7 authenticated capture over CDP, forced 16:9 so window shape never letterboxes the frame",
+          "\ud83d\udd8b\ufe0f **A cursor that actually moves** \u00b7 eased glide paths and click ripples from safe telemetry \u2014 no URLs, DOM text, or account data recorded",
+          "\ud83d\udd0e **Renders you can prove** \u00b7 digest-bound provenance plus OCR-verified caption and frame evidence at every route and click"
+        ],
+        "run": "Then drop a scenario in and run `pnpm narrated:capture --help`"
+      }
     }
   ]
 }
