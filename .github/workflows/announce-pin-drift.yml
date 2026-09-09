@@ -1,0 +1,53 @@
+name: Announce pin drift
+
+# Report catalog plugins running a stale announce helper.
+#
+# The reusable announce workflow checks its helper out at `ref: ${{ job.workflow_sha }}`,
+# so the code that runs is whatever the CALLER pinned. Fixing scripts/tool-drop-announce.sh
+# ships nothing until every consumer bumps its `uses: ...@<sha>`, and nothing anywhere
+# reported that gap: the nine plugins all sat on 08f7d22 (2026-08-11) while main had gained
+# 442ddff (2026-08-21) -- "report a skipped announce loudly instead of silently going
+# green" -- for nineteen days.
+#
+# Deliberately read-only. It opens no PRs and no issues, writes nothing in the consumer
+# repositories, and needs no credential beyond this workflow's own token: every catalog
+# plugin is public. It reports one fact -- is the fleet current -- and leaves acting to a
+# human or an agent.
+#
+# The push trigger is the useful half. Changing the helper makes this red immediately,
+# because at that moment the fix genuinely is not shipped; it goes green when the last
+# consumer's pin lands. Red here never blocks a consumer's own release.
+
+on:
+  schedule:
+    # Daily, off the hour: drift persists until someone acts, so polling faster than the
+    # response time only repeats a fact already on the board.
+    - cron: '41 7 * * *'
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/tool-drop-announce.sh'
+      - '.github/workflows/hov-tool-drop-announce.yml'
+      - '.claude-plugin/marketplace.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: announce-pin-drift
+  cancel-in-progress: false
+
+jobs:
+  drift:
+    name: Helper pin drift
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@ac593985615ec2ede58e132d2e21d2b1cbd6127c
+        with:
+          persist-credentials: false
+      - name: Report consumers running a stale announce helper
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/announce-pin-drift.sh
