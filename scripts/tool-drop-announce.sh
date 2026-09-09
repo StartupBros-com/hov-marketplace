@@ -35,6 +35,20 @@ readonly ANNOUNCE_MAX_ATTEMPTS=8
 readonly RETRY_LEASE_EXPIRY_CUSHION_SECONDS=2
 readonly RETRY_JITTER_MAX_SECONDS=3
 readonly RESPONSE_CONTEXT_MAX_BYTES=2048
+# The ONE retryable 403. main() reaches announce() only after marketplace_lists_release()
+# has matched the manifest on all five identity fields (name, source.sha, metadata.version,
+# metadata.releaseId, metadata.releaseTag), so this rejection means the client proved the card
+# names this exact release and the service's own view had not caught up yet. That is a
+# propagation lag, not an authorization refusal. Matching the exact message keeps every other
+# 403 -- a bad audience, a revoked app, a genuinely absent promotion -- terminal on attempt one,
+# and a reworded server message falls back to that terminal path rather than looping.
+readonly PROMOTION_LAG_ERROR='release does not match the marketplace promotion'
+# No Retry-After accompanies this one, so the wait is ours to choose. Two observations on
+# 2026-09-09 (pro-gate): a 61s repin-to-POST gap failed, a 77s gap succeeded, and a re-run
+# ~100 minutes later succeeded. 30s across the existing 8-attempt budget covers ~3.5 minutes,
+# which brackets both samples. If the real mechanism turns out to be a longer cache TTL, raise
+# THIS rather than the attempt count -- the attempt budget is shared with the 409/429 lease path.
+readonly PROMOTION_LAG_RETRY_SECONDS=30
 
 ANNOUNCE_RESPONSE_DIR=''
 
@@ -273,9 +287,19 @@ send_request() {
   fi
 }
 
+# 0 only when this response is the promotion-propagation 403. A non-JSON, empty, or
+# differently-shaped body makes jq exit non-zero, which reads as "not retryable" -- the
+# failure direction that keeps an unrecognized 403 terminal.
+promotion_lag_403() { # <http-status> <response-body-file>
+  [[ "$1" == 403 ]] || return 1
+  jq -e --arg m "$PROMOTION_LAG_ERROR" \
+    'if type == "object" then (.error? == $m) else false end' "$2" >/dev/null 2>&1
+}
+
 announce() {
   local notes request_body request_sha audience oidc_token
   local response_body response_headers http_status retry_after retry_delay retry_jitter
+  local promotion_lag
   local attempt result=1
   if [[ "${LEGACY_MODE:-false}" == true ]]; then
     request_body="$(jq -cn \
@@ -325,11 +349,15 @@ announce() {
       result=0
       break
     fi
-    if [[ "$http_status" != 409 && "$http_status" != 429 ]]; then
+    promotion_lag=false
+    if promotion_lag_403 "$http_status" "$response_body"; then promotion_lag=true; fi
+    if [[ "$http_status" != 409 && "$http_status" != 429 && "$promotion_lag" == false ]]; then
       report_response_context "Tool Drop POST failed with HTTP $http_status" "$response_body"
       break
     fi
-    if ! retry_after="$(retry_after_seconds "$response_headers" "$http_status")"; then
+    if [[ "$promotion_lag" == true ]]; then
+      retry_after="$PROMOTION_LAG_RETRY_SECONDS"
+    elif ! retry_after="$(retry_after_seconds "$response_headers" "$http_status")"; then
       report_response_context "HTTP $http_status lacked one canonical Retry-After value from 1 through 600" "$response_body"
       break
     fi

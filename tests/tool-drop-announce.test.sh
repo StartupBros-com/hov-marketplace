@@ -188,7 +188,15 @@ check_contract() {
   grep -Fxq 'readonly RETRY_JITTER_MAX_SECONDS=3' "$helper" || return 1
   grep -Fq '[[ "$expected_status" == 409 || "$expected_status" == 429 ]] || return 1' "$helper" || return 1
   grep -Fq '[[ "$final_status" == "$expected_status" ]] || return 1' "$helper" || return 1
-  grep -Fq 'if [[ "$http_status" != 409 && "$http_status" != 429 ]]; then' "$helper" || return 1
+  grep -Fq 'if [[ "$http_status" != 409 && "$http_status" != 429 && "$promotion_lag" == false ]]; then' "$helper" || return 1
+  # The 403 widening is deliberately narrow. Only a response that PARSES as a JSON object and
+  # whose .error is this exact server message is retryable; every other 403 -- a bad audience, a
+  # revoked app, a genuinely absent promotion, an HTML error page -- stays terminal on attempt
+  # one. Pin the message, the status guard and the jq shape so a later edit cannot quietly turn
+  # this into "any 403 is retryable" without editing this contract.
+  grep -Fxq "readonly PROMOTION_LAG_ERROR='release does not match the marketplace promotion'" "$helper" || return 1
+  grep -Fq '[[ "$1" == 403 ]] || return 1' "$helper" || return 1
+  grep -Fq 'if type == "object" then (.error? == $m) else false end' "$helper" || return 1
   grep -Fq '[[ "${values[0]}" =~ ^([1-9]|[1-9][0-9]|[1-5][0-9][0-9]|600)$ ]]' "$helper" || return 1
   grep -Fq 'retry_after="$(retry_after_seconds "$response_headers" "$http_status")"' "$helper" || return 1
   grep -Fq 'digest="$(sha256_bytes "$jitter_repository:$jitter_release_id:$jitter_attempt")"' "$helper" || return 1
@@ -419,9 +427,19 @@ replace_once "$HELPER" "$mutant" \
 expect_contract_reject "widened Retry-After validation" "$WORKFLOW" "$mutant"
 mutant="$TMP/helper-wide-retry-status.sh"
 replace_once "$HELPER" "$mutant" \
-  'if [[ "$http_status" != 409 && "$http_status" != 429 ]]; then' \
-  'if [[ "$http_status" != 409 && "$http_status" != 429 && "$http_status" != 503 ]]; then'
+  'if [[ "$http_status" != 409 && "$http_status" != 429 && "$promotion_lag" == false ]]; then' \
+  'if [[ "$http_status" != 409 && "$http_status" != 429 && "$http_status" != 503 && "$promotion_lag" == false ]]; then'
 expect_contract_reject "widened retry status set" "$WORKFLOW" "$mutant"
+mutant="$TMP/helper-any-403-retryable.sh"
+replace_once "$HELPER" "$mutant" \
+  'if type == "object" then (.error? == $m) else false end' \
+  'if type == "object" then true else false end'
+expect_contract_reject "any-403 treated as promotion lag" "$WORKFLOW" "$mutant"
+mutant="$TMP/helper-dropped-403-status-guard.sh"
+replace_once "$HELPER" "$mutant" \
+  '  [[ "$1" == 403 ]] || return 1' \
+  '  : "$1"'
+expect_contract_reject "promotion-lag detector without its status guard" "$WORKFLOW" "$mutant"
 mutant="$TMP/helper-raw-retry-sleep.sh"
 raw_header_parse='retry_after="$(sed -n "s/^Retry-After: //p" "$response_headers")"'
 replace_once "$HELPER" "$mutant" \

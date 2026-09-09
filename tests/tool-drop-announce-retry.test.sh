@@ -158,5 +158,87 @@ report "legacy workflow main path uses canonical fields and a fresh generic-audi
 )
 report "legacy workflow rejects secret authentication before mint or send" $?
 
+# --- promotion-propagation 403 -------------------------------------------------
+# Observed on pro-gate v0.41.0 (2026-09-09): the announce POSTed 61s after its marketplace
+# repin merged and got 403 "release does not match the marketplace promotion" although the
+# manifest already pinned the correct commit; a later re-run succeeded. v0.42.0's gap was
+# 77s and passed, so ordering does not close it -- only a retry does.
+promotion_lag_body='{"success":false,"error":"release does not match the marketplace promotion"}'
+
+(
+  setup
+  send_request() {
+    local response_body="$4" response_headers="$5" status_name="$6" n
+    printf 'post\n' >>"$STUB_CALLS"
+    n="$(wc -l <"$STUB_CALLS")"
+    : >"$response_headers"
+    if ((n < 3)); then
+      printf '%s' "$promotion_lag_body" >"$response_body"
+      printf -v "$status_name" '%s' 403
+    else
+      printf '%s' '{"success":true,"status":"announced","messageId":"1"}' >"$response_body"
+      printf -v "$status_name" '%s' 200
+    fi
+  }
+  out="$(announce)" || exit 1
+  [[ "$out" == *announced* ]] || exit 1
+  [[ "$(wc -l <"$STUB_CALLS")" == 3 ]] || exit 1
+  # The fixed backoff is used because this 403 carries no Retry-After at all.
+  j1="$(retry_jitter_seconds "$REPOSITORY" "$RELEASE_ID" 1)"
+  j2="$(retry_jitter_seconds "$REPOSITORY" "$RELEASE_ID" 2)"
+  [[ "$(<"$STUB_SLEEPS")" == "$((PROMOTION_LAG_RETRY_SECONDS + RETRY_LEASE_EXPIRY_CUSHION_SECONDS + j1))
+$((PROMOTION_LAG_RETRY_SECONDS + RETRY_LEASE_EXPIRY_CUSHION_SECONDS + j2))" ]] || exit 1
+)
+report "promotion-lag 403 retries on a fixed backoff with no Retry-After, then succeeds" $?
+
+# The safety half. Widening a 403 must not soften an authorization refusal: anything but the
+# exact promotion message has to die on attempt one, as every 403 did before this change.
+(
+  setup
+  send_request() {
+    local response_body="$4" response_headers="$5" status_name="$6"
+    printf 'post\n' >>"$STUB_CALLS"
+    : >"$response_headers"
+    printf '%s' '{"success":false,"error":"missing or invalid OIDC token"}' >"$response_body"
+    printf -v "$status_name" '%s' 403
+  }
+  if (announce) >/dev/null 2>&1; then exit 1; fi
+  [[ "$(wc -l <"$STUB_CALLS")" == 1 ]] || exit 1
+  [[ ! -s "$STUB_SLEEPS" ]] || exit 1
+)
+report "a 403 that is not the promotion lag stays terminal on the first attempt" $?
+
+# A body jq cannot read must not be guessed at: unparseable reads as not-retryable.
+(
+  setup
+  send_request() {
+    local response_body="$4" response_headers="$5" status_name="$6"
+    printf 'post\n' >>"$STUB_CALLS"
+    : >"$response_headers"
+    printf '%s' '<html>403 Forbidden</html>' >"$response_body"
+    printf -v "$status_name" '%s' 403
+  }
+  if (announce) >/dev/null 2>&1; then exit 1; fi
+  [[ "$(wc -l <"$STUB_CALLS")" == 1 ]] || exit 1
+  [[ ! -s "$STUB_SLEEPS" ]] || exit 1
+)
+report "a 403 with a non-JSON body fails closed instead of retrying" $?
+
+# Bounded, like the 409/429 path: a lag that never clears still ends.
+(
+  setup
+  send_request() {
+    local response_body="$4" response_headers="$5" status_name="$6"
+    printf 'post\n' >>"$STUB_CALLS"
+    : >"$response_headers"
+    printf '%s' "$promotion_lag_body" >"$response_body"
+    printf -v "$status_name" '%s' 403
+  }
+  if (announce) >/dev/null 2>&1; then exit 1; fi
+  [[ "$(wc -l <"$STUB_CALLS")" == "$ANNOUNCE_MAX_ATTEMPTS" ]] || exit 1
+  [[ "$(wc -l <"$STUB_SLEEPS")" == "$((ANNOUNCE_MAX_ATTEMPTS - 1))" ]] || exit 1
+)
+report "a promotion lag that never clears exhausts the attempt budget and fails" $?
+
 printf '%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" == 0 ]]
