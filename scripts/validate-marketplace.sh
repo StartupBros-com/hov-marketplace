@@ -73,6 +73,7 @@ expected_source_url() {
     harness-vet) printf '%s\n' 'https://github.com/StartupBros-com/harness-vet.git' ;;
     rent-check) printf '%s\n' 'https://github.com/StartupBros-com/rent-check.git' ;;
     papercut) printf '%s\n' 'https://github.com/StartupBros-com/papercut.git' ;;
+    product-video) printf '%s\n' 'https://github.com/StartupBros-com/product-video.git' ;;
     *) return 1 ;;
   esac
 }
