@@ -245,7 +245,7 @@
       },
       "card": {
         "rows": [
-          "\u270d\ufe0f **Say \"sign that\"** \u00b7 the agent finds the signature line, stamps your stored signature and the date, and hands back <file>-signed.pdf",
+          "\u270d\ufe0f **Say \"sign that\"** \u00b7 finds the line, stamps your signature and the date, fills Printed Name, Title and Email, hands back <file>-signed.pdf",
           "\ud83d\uded1 **Never over a signature, never a guess** \u00b7 a line that already carries ink is refused; no line found or two equal lines stops with the candidates listed",
           "\ud83d\udcc4 **PDFs, Word files, forms, scans** \u00b7 AcroForm fields, typed or drawn rules and captions, .docx via LibreOffice or Word, owner-password forms, OCR for scans"
         ],
