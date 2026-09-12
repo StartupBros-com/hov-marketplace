@@ -39,6 +39,15 @@ to see the repository from two separate places, and only the first is scriptable
    release App installation token" with a 404 from the installation lookup,
    even with the secrets in place.
 
+3. `repin-reconcile` only reconciles cards that already exist, and its
+   draft-visible read token is minted for the explicit `repositories:` list in
+   `.github/workflows/repin-reconcile.yml`. For a NEW plugin, write the first
+   card by hand (name, `source.url`, `source.sha` = the commit the release tag
+   points at, `metadata.{version,releaseId,releaseTag}`, `card.rows`,
+   `card.run`), add the repo to that `repositories:` list, and add the README
+   install line and section in the same PR. Later releases reconcile
+   automatically.
+
 Bootstrap the repo at a pre-release `VERSION` (for example `0.1.0-rc1`) so the
 first push to main does not try to release before both are in place; the real
 version bump PR is then the ship signal as described below.
