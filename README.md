@@ -13,6 +13,7 @@ Claude Code tools for builders. Add the marketplace over HTTPS once, then instal
 /plugin install harness-vet@hov
 /plugin install rent-check@hov
 /plugin install papercut@hov
+/plugin install sign-it@hov
 ```
 
 Third-party marketplace updates are off by default. Open `/plugin`, select **Marketplaces**, choose `hov`, and select **Enable auto-update**. Updates are applied at the start of a Claude Code session.
@@ -73,3 +74,7 @@ ranks the pile by how many distinct sessions hit each snag, folds duplicate
 spellings into causal families, and carries one family at a time into a
 tracked work item with a verification stage that refuses to call the fix done
 on silence alone.
+
+## sign-it
+
+Say "sign that" and get `<file>-signed.pdf` back: the agent finds the signature line (form fields, the text layer, or a scanned page via OCR), stamps your stored signature and today's date, and shows you a preview. It refuses to guess when the line is missing or ambiguous, never draws a signature for you, and can add a cryptographic seal. Draw your signature once with `setup --draw`; needs Node, poppler-utils, and tesseract for scans.
