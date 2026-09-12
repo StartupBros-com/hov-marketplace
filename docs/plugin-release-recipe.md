@@ -139,6 +139,24 @@ identity for the reason above. Branch names must never be tag-shaped
 (`vX.Y.Z` as a branch collides with the tag in `actions/checkout` ref
 resolution — issue #49).
 
+## Card copy: what the validator enforces
+
+The reconciler repins identity only (`source.sha`, `metadata.version`,
+`releaseId`, `releaseTag`). Copy lives in the card and is edited by hand in a
+separate PR. `scripts/validate-marketplace.sh syntax` rejects the whole
+manifest as "invalid shape" (no field named) when a card breaks any of:
+
+- `card.rows`: exactly 3 strings, each 1-180 characters.
+- `card.run`: 1-120 characters.
+- `card.tagline` (optional): 1-80 characters.
+- `metadata` keys: only `version`, `releaseId`, `releaseTag`.
+
+Rewrite the manifest with the file's own escape style (`json.dumps(...,
+ensure_ascii=True, indent=2)`): a serializer that emits literal emoji turns
+every other card's `\ud83d...` escapes into a diff and fails the same check.
+Measured on sign-it v0.2.0's copy PR (#148): two failed validator runs before
+the caps were found in the script.
+
 ## Release notes: lead with `## Highlights`
 
 The drop card's what's-new block is derived from the release body, in this
