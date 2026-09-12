@@ -85,7 +85,7 @@ jobs:
           app-id: ${{ secrets.HOV_RELEASE_APP_ID }}
           private-key: ${{ secrets.HOV_RELEASE_APP_PRIVATE_KEY }}
           owner: StartupBros-com
-          repositories: harness-vet,token-eater,skill-tuner,wsl-cdp,memory-dream,design-rails,rent-check,papercut,pro-gate
+          repositories: harness-vet,token-eater,skill-tuner,wsl-cdp,memory-dream,design-rails,rent-check,papercut,pro-gate,sign-it
           permission-contents: write
           permission-metadata: read
 
