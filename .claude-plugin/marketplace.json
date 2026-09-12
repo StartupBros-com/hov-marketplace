@@ -237,7 +237,7 @@
         "url": "https://github.com/StartupBros-com/sign-it.git",
         "sha": "35e361899f97b46d954566930943a1ccae0ae279"
       },
-      "description": "Agent-native PDF signing: say \"sign that\" and get <file>-signed.pdf back. Finds the signature line in form fields, the text layer, or scanned pages, stamps your stored signature and today's date, previews the result, fails closed when the line is missing or ambiguous, and can add a PAdES seal. Your own signature only, never a counterparty's.",
+      "description": "Agent-native PDF signing: say \"sign that\" and get <file>-signed.pdf back. Finds the signature line in form fields, the text layer (typed or drawn rules, captions under the rule), or scanned pages, stamps your stored signature and today's date, previews the result, and never stamps over an existing signature. Converts Word documents, opens owner-password forms, fails closed when the line is missing or ambiguous, and can add a PAdES seal. Your own signature only, never a counterparty's.",
       "metadata": {
         "version": "0.2.0",
         "releaseId": 387508098,
@@ -246,8 +246,8 @@
       "card": {
         "rows": [
           "\u270d\ufe0f **Say \"sign that\"** \u00b7 the agent finds the signature line, stamps your stored signature and the date, and hands back <file>-signed.pdf",
-          "\ud83d\uded1 **Never guesses** \u00b7 no signature configured, no line found, or two equal lines stops with the candidates listed",
-          "\ud83d\udcc4 **Forms, text, and scans** \u00b7 AcroForm fields, text-layer blanks, and tesseract OCR for scanned pages, upright on rotated pages"
+          "\ud83d\uded1 **Never over a signature, never a guess** \u00b7 a line that already carries ink is refused; no line found or two equal lines stops with the candidates listed",
+          "\ud83d\udcc4 **PDFs, Word files, forms, scans** \u00b7 AcroForm fields, typed or drawn rules and captions, .docx via LibreOffice or Word, owner-password forms, OCR for scans"
         ],
         "run": "Then draw your signature once with `setup --draw` and say \"sign contract.pdf as <your role>\""
       }
