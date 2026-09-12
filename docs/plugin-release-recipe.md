@@ -23,6 +23,26 @@ headroom, trimming descriptions does. Before adding plugin N+1, either re-check
 a Codex install or accept that the one distribution lane already proven to work
 outside Claude Code degrades a little further. Keep descriptions lean.
 
+### Provisioning a NEW plugin repository (measured on sign-it, 2026-09-12)
+
+Copying the three workflows is not enough; the release identity has to be able
+to see the repository from two separate places, and only the first is scriptable:
+
+1. Org secrets `HOV_RELEASE_APP_ID` and `HOV_RELEASE_APP_PRIVATE_KEY` use
+   "selected repositories": add the new repo
+   (`gh api -X PUT orgs/StartupBros-com/actions/secrets/<NAME>/repositories/<repo_id>`).
+2. The `startupbros-hov-release` GitHub App installation also uses "selected
+   repositories". Adding a repo to it through the API returns 403 for anything
+   short of an organization owner, so this is a UI step: Organization settings
+   → GitHub Apps → startupbros-hov-release → Configure → Repository access →
+   add the repository. Until it is done, `auto-release.yml` fails at "Mint a
+   release App installation token" with a 404 from the installation lookup,
+   even with the secrets in place.
+
+Bootstrap the repo at a pre-release `VERSION` (for example `0.1.0-rc1`) so the
+first push to main does not try to release before both are in place; the real
+version bump PR is then the ship signal as described below.
+
 ## The order
 
 Since 2026-09 every catalog plugin carries three identical workflows (pattern
