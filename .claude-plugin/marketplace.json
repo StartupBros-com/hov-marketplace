@@ -235,13 +235,13 @@
       "source": {
         "source": "url",
         "url": "https://github.com/StartupBros-com/sign-it.git",
-        "sha": "8006d4165df51d09f9b2a96d0d09aeb868b71934"
+        "sha": "739a2bba7a2d40c759b518569465e4e56ce1295d"
       },
       "description": "Agent-native PDF signing: say \"sign that\" and get <file>-signed.pdf back. Finds the signature line in form fields, the text layer (typed or drawn rules, captions under the rule), or scanned pages, stamps your stored signature and today's date, previews the result, and never stamps over an existing signature. Converts Word documents, opens owner-password forms, fails closed when the line is missing or ambiguous, and can add a PAdES seal. Your own signature only, never a counterparty's.",
       "metadata": {
-        "version": "0.3.0",
-        "releaseId": 387525970,
-        "releaseTag": "v0.3.0"
+        "version": "0.4.0",
+        "releaseId": 387683411,
+        "releaseTag": "v0.4.0"
       },
       "card": {
         "rows": [
