@@ -245,7 +245,7 @@
       },
       "card": {
         "rows": [
-          "\u270d\ufe0f **Say \"sign that\"** \u00b7 finds the line, stamps your signature and the date, fills Printed Name, Title and Email, hands back <file>-signed.pdf",
+          "\u270d\ufe0f **Say \"sign that\"** \u00b7 first run asks in plain words: draw your signature in the browser or on your phone, or use a photo; then it signs, dates and fills the block",
           "\ud83d\uded1 **Never over a signature, never a draft, never a guess** \u00b7 an already-signed line or a DRAFT / Proposed Revision marker stops it and asks; two equal lines stop it too",
           "\ud83d\udcc4 **PDFs, Word files, forms, scans** \u00b7 AcroForm fields, typed or drawn rules and captions, .docx via LibreOffice or Word, owner-password forms, OCR for scans"
         ],
