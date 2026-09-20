@@ -96,6 +96,36 @@ from pro-gate, generalized in hov-marketplace#118): `auto-release.yml`,
    the run green. Repeated edits may return the same message ID because the
    service updates the existing card instead of posting a duplicate.
 
+### Optional: gate a release on the plugin's eval suite
+
+A plugin that ships an `evals/` directory (`claude plugin eval`, Claude Code
+v2.1.269+) can run it as a release-time check. Keep it off by default and out
+of the per-push test workflow: every case is real model spend on the
+credential the job holds, and a three-case suite at the default three runs
+per arm costs about $1.50 to $2.50 at the default agent model. Pin both models
+so a model rollout is never read as a plugin regression, keep the report
+local, set a ceiling, and use a threshold below 1.0: an undamaged plugin has
+scored 2 of 3 on an `llm` rubric from judge noise alone.
+
+```bash
+claude plugin eval . --trust-plugin --no-publish --json results.json \
+  --runs 3 --threshold 0.67 --model claude-sonnet-5 --judge-model claude-haiku-4-5 \
+  --max-cost-usd 10
+```
+
+Exit 1 is a case below the threshold, exit 2 a partial run at the cost
+ceiling (`partial: true` in the JSON). The job needs an `ANTHROPIC_API_KEY`
+secret; none of the catalog workflows carries one today, which is the point of
+keeping this step opt-in. Bash-granting cases need a runner whose HOME carries
+no cross-filesystem credential symlinks (a WSL `~/.aws -> /mnt/c/...` link makes
+the sandbox refuse the run); routing-only suites run anywhere.
+
+`evals/` is inert to the marketplace validator and to Codex installs (the
+agent-plugins.org schema has no such field), and results belong in
+`.gitignore`. Do not add the `experimental.evals` manifest key to a plugin
+whose `plugin.json` declares the agent-plugins.org schema: that schema sets
+`additionalProperties: false`.
+
 Two steps stay human on purpose: merging the card PR, because a standing
 credential that writes this manifest unattended is the one whose compromise
 reaches every installed client; and dispatching the publish, because it fires

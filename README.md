@@ -62,6 +62,15 @@ Vet a third-party Claude Code skill before you install it. `/harness-vet` reads 
 
 Your always-on context has to pay rent. `/rent-check` audits what CLAUDE.md and always-on skills actually cost per prompt, measures which rules earn their tokens from real transcripts, and proposes demotions for the ones that do not.
 
+## Evaluating a plugin with `claude plugin eval`
+
+Claude Code v2.1.269 and later can run any installed plugin's eval suite: `claude plugin eval skill-tuner@hov`. Each case runs in a throwaway session with only that plugin loaded, once with it and once without, and the report shows what the plugin contributed. Two things to know before you run one against a catalog plugin:
+
+- A run executes the plugin's own hooks as you, outside the sandbox that confines the agent's shell. papercut is the only catalog plugin that ships hooks; inside a run its only host-visible write is its own log under the run's throwaway config directory, but its `PreToolUse` hooks can still deny or rewrite the tool calls a suite is grading.
+- On a claude.ai subscription the HTML report (prompts, outputs, judge votes) is published to your account by default. Pass `--no-publish` to keep it local. A passing suite is not a security review of the plugin.
+
+Catalog plugins ship routing-only suites first (does the skill fire on natural phrasing, and stay quiet on unrelated requests); output suites follow where a case can be graded without real spend or a live host. Suites are run at release time, not on every push.
+
 ## License
 
 MIT
