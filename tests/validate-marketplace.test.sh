@@ -172,6 +172,20 @@ printf '\n# TOOL_RELEASE_ANNOUNCE_SECRET must never return\n' >>"$TMP/token-eate
 publish_fixture_commit 'static announce secret'
 validate_default_branch_failure "static announce secret is forbidden"
 
+# --- plugin eval suites (claude plugin eval, v2.1.269+) are inert to the contract ---
+# A catalog plugin that ships evals/ and the experimental.evals manifest key must
+# validate exactly like one that does not (hov-marketplace#163).
+restore_valid_token_fixture
+mkdir -p "$TMP/token-eater/evals/smoke/graders"
+printf -- '---\nmax_turns: 2\n---\nSay hi.\n' >"$TMP/token-eater/evals/smoke/prompt.md"
+printf -- '---\ntype: regex\npattern: hi\n---\n' >"$TMP/token-eater/evals/smoke/graders/says-hi.md"
+jq '. + {experimental: {evals: "evals"}}' "$TMP/token-eater/.claude-plugin/plugin.json" >"$TMP/evals-manifest.json"
+mv "$TMP/evals-manifest.json" "$TMP/token-eater/.claude-plugin/plugin.json"
+publish_fixture_commit 'ship a plugin eval suite'
+write_manifest "$TOKEN_SHA" "$PRO_SHA" 10
+expect_pass "default branch carrying evals/ and experimental.evals accepted" validate full
+rm -rf "$TMP/token-eater/evals"
+
 # --- announce-workflow pin: verified structurally, not against one constant ---
 # A frozen SHA allowlist rejected the CORRECT state the moment the shared
 # workflow advanced (#34 re-pinned six of eight repos). The pin must be a real
