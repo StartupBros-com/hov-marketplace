@@ -147,13 +147,13 @@
       "source": {
         "source": "url",
         "url": "https://github.com/StartupBros-com/harness-vet.git",
-        "sha": "1dfaaca7b767ce89863044c4af62c68a2a9dd786"
+        "sha": "a3eff2724a3a360b74db44045165ece81216411b"
       },
       "description": "Adoption gate for external agent tooling. /harness-vet deep-dives a skill, plugin, MCP server, repo, or paper against YOUR harness: a candidate can be skip globally and adopt in one project, with artifact safety judged once and utility, reachable incumbents and context cost judged per target \u2014 claims verified by running them, placement and activation verified on the live host, and an audit dividend that often outvalues the verdict.",
       "metadata": {
-        "version": "0.2.3",
-        "releaseId": 384400044,
-        "releaseTag": "v0.2.3"
+        "version": "0.2.4",
+        "releaseId": 392577830,
+        "releaseTag": "v0.2.4"
       },
       "card": {
         "rows": [
@@ -169,13 +169,13 @@
       "source": {
         "source": "url",
         "url": "https://github.com/StartupBros-com/rent-check.git",
-        "sha": "76db92ce7aa7cf427034bc1c087f5bc8ee2bb2fb"
+        "sha": "56f748585d0bb649c5e6ed71efa5ba439ce38fe6"
       },
       "description": "Every always-loaded line pays rent or gets cut. /rent-check audits CLAUDE.md, AGENTS.md, rules dirs and the always-loaded surface around them: load-class costing, enforcement-backing analysis (which rules are just words), reality drift against the live repo, and evidence-tiered verdicts with folklore labeled as folklore \u2014 report-first, verified draft diffs, never auto-applied.",
       "metadata": {
-        "version": "0.3.0",
-        "releaseId": 368412763,
-        "releaseTag": "v0.3.0"
+        "version": "0.3.1",
+        "releaseId": 392577554,
+        "releaseTag": "v0.3.1"
       },
       "card": {
         "rows": [
