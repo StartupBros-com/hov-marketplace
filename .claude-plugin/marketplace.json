@@ -237,7 +237,7 @@
         "url": "https://github.com/StartupBros-com/sign-it.git",
         "sha": "3a66772de0ee8e0fc5f2812356040ea9fa5b8bb4"
       },
-      "description": "Agent-native PDF signing: say \"sign that\" and get <file>-signed.pdf back. Finds the signature line in form fields, the text layer (typed or drawn rules, captions under the rule), or scanned pages, stamps your stored signature and today's date, previews the result, and never stamps over an existing signature. Converts Word documents, opens owner-password forms, fails closed when the line is missing or ambiguous, and can add a PAdES seal. Your own signature only, never a counterparty's.",
+      "description": "Agent-native PDF signing: type /sign-it with a document and get <file>-signed.pdf back; Claude never starts it on its own. Finds the signature line in form fields, the text layer (typed or drawn rules, captions under the rule), or scanned pages, stamps your stored signature and today's date, previews the result, and never stamps over an existing signature. Converts Word documents, opens owner-password forms, fails closed when the line is missing or ambiguous, and can add a PAdES seal. Your own signature only, never a counterparty's.",
       "metadata": {
         "version": "0.6.0",
         "releaseId": 395112853,
@@ -245,11 +245,11 @@
       },
       "card": {
         "rows": [
-          "\u270d\ufe0f **Say \"sign that\"** \u00b7 first run asks in plain words: draw your signature in the browser or on your phone, or use a photo; then it signs, dates and fills the block",
+          "\u270d\ufe0f **Type /sign-it** \u00b7 only you start it; the first run asks in plain words: draw your signature in the browser or on your phone, or use a photo",
           "\ud83d\uded1 **Never over a signature, never a draft, never a guess** \u00b7 an already-signed line or a DRAFT / Proposed Revision marker stops it and asks; two equal lines stop it too",
           "\ud83d\udcc4 **PDFs, Word files, forms, scans** \u00b7 AcroForm fields, typed or drawn rules and captions, .docx via LibreOffice or Word, owner-password forms, OCR for scans"
         ],
-        "run": "Then draw your signature once with `setup --draw` and say \"sign contract.pdf as <your role>\""
+        "run": "Then type `/sign-it` with a document; the first run sets up your signature and details"
       }
     }
   ]

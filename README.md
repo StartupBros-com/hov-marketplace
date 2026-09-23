@@ -86,4 +86,4 @@ on silence alone.
 
 ## sign-it
 
-Say "sign that" and get `<file>-signed.pdf` back: the agent finds the signature line (form fields, the text layer, or a scanned page via OCR), stamps your stored signature and today's date, and shows you a preview. It refuses to guess when the line is missing or ambiguous, never draws a signature for you, and can add a cryptographic seal. Draw your signature once with `setup --draw`; needs Node, poppler-utils, and tesseract for scans.
+Type `/sign-it` with a document and get `<file>-signed.pdf` back (Claude never starts it on its own): the agent finds the signature line (form fields, the text layer, or a scanned page via OCR), stamps your stored signature and today's date, and shows you a preview. It refuses to guess when the line is missing or ambiguous, never draws a signature for you, and can add a cryptographic seal. The first run sets up your signature in plain words; needs Node, poppler-utils, and tesseract for scans.
