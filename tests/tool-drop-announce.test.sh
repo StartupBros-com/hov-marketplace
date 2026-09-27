@@ -160,6 +160,7 @@ check_contract() {
   grep -Fq 'is_positive_uint "$RELEASE_ID" || fail "RELEASE_ID must be a positive canonical decimal integer"' "$helper" || return 1
   grep -Fq 'is_positive_uint "$LATEST_STABLE_ID" || fail "LATEST_STABLE_ID must be a positive canonical decimal integer"' "$helper" || return 1
   grep -Fq 'require CURRENT_RELEASE_FILE' "$helper" || return 1
+  [[ "$({ grep -Fo 'require CURRENT_RELEASE_FILE' "$helper" || true; } | wc -l)" == 2 ]] || return 1
   grep -Fq '((.id | tostring) == $expected_id)' "$helper" || return 1
   grep -Fq '(.tag_name == $expected_tag)' "$helper" || return 1
   grep -Fq 'has("body")' "$helper" || return 1
