@@ -119,44 +119,13 @@ report "persistent canonical 409 exhausts eight attempts without a ninth" $?
 
 (
   setup
-  source_root="$WORK/source"
-  manifest="$WORK/manifest.json"
-  mkdir -p "$source_root/.claude-plugin"
-  printf '1.2.3\n' >"$source_root/VERSION"
-  printf '{"version":"1.2.3"}\n' >"$source_root/.claude-plugin/plugin.json"
-  git -C "$source_root" init -q
-  git -C "$source_root" config user.name Fixture
-  git -C "$source_root" config user.email fixture@example.com
-  git -C "$source_root" add VERSION .claude-plugin/plugin.json
-  git -C "$source_root" commit -qm fixture
-  git -C "$source_root" tag v1.2.3
-  source_sha="$(git -C "$source_root" rev-parse HEAD)"
-  jq -n --arg sha "$source_sha" \
-    '{plugins:[{name:"stub-repo",source:{sha:$sha},metadata:{version:"1.2.3",releaseId:1,releaseTag:"v1.2.3"},card:{rows:["one","two","three"],run:"Run"}}]}' \
-    >"$manifest"
-  export EVENT_ACTION=published RELEASE_TAG=v1.2.3 LATEST_STABLE_ID=1
-  export SOURCE_ROOT="$source_root" SOURCE_SHA="$source_sha" MARKETPLACE_MANIFEST="$manifest"
-  export ANNOUNCE_URL=https://attacker.invalid OIDC_TOKEN=caller-token
-  export RELEASE_NAME='Caller title' RELEASE_URL=https://attacker.invalid/release
-  printf '200 posted\n' >"$STUB_SCENARIO"
-  out="$(main)" || exit 1
-  [[ "$out" == *posted ]] || exit 1
-  [[ "$(<"$STUB_AUDIENCES")" == "$LEGACY_OIDC_AUDIENCE" ]] || exit 1
-  [[ "$(<"$STUB_POST_TOKENS")" == stub-token-1 ]] || exit 1
-  [[ "$(<"$STUB_BODY")" == '{"operation":"announce","repository":"stub-repo","releaseId":"1","tag":"v1.2.3","releaseName":"stub-repo v1.2.3","releaseUrl":"https://github.com/StartupBros-com/stub-repo/releases/tag/v1.2.3"}' ]] || exit 1
-  [[ "$(wc -l <"$STUB_MINTS")" == 1 ]] || exit 1
-)
-report "legacy workflow main path uses canonical fields and a fresh generic-audience token" $?
-
-(
-  setup
   export EVENT_ACTION=published RELEASE_TAG=v1.2.3 LATEST_STABLE_ID=1
   export SOURCE_ROOT="$WORK/source" SOURCE_SHA=fixture MARKETPLACE_MANIFEST="$WORK/manifest.json"
-  export OIDC_TOKEN=caller-token ANNOUNCE_SECRET=forbidden
-  if (main) >/dev/null 2>&1; then exit 1; fi
+  out="$(main 2>&1)" && exit 1
+  [[ "$out" == 'error: CURRENT_RELEASE_FILE is required' ]] || exit 1
   [[ ! -s "$STUB_MINTS" && ! -s "$STUB_CALLS" ]] || exit 1
 )
-report "legacy workflow rejects secret authentication before mint or send" $?
+report "main fails fast with a clear message when CURRENT_RELEASE_FILE is unset" $?
 
 # --- promotion-propagation 403 -------------------------------------------------
 # Observed on pro-gate v0.41.0 (2026-09-09): the announce POSTed 61s after its marketplace

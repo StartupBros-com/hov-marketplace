@@ -50,8 +50,8 @@ check_contract() {
   ! grep -Fq 'ANNOUNCE_URL' "$workflow" || return 1
   ! grep -Fq 'ANNOUNCE_SECRET' "$workflow" || return 1
   ! grep -Fq 'OIDC_TOKEN' "$workflow" || return 1
-  grep -Fq 'unset ANNOUNCE_URL OIDC_TOKEN RELEASE_NAME RELEASE_URL RELEASE_NOTES RELEASE_PRERELEASE RELEASE_DRAFT' "$helper" || return 1
-  grep -Fq '[[ -z "${ANNOUNCE_SECRET:-}" ]] || fail "legacy workflow secret authentication is not supported"' "$helper" || return 1
+  ! grep -Eq '\b(LEGACY_MODE|LEGACY_OIDC_AUDIENCE|ANNOUNCE_URL|ANNOUNCE_SECRET|OIDC_TOKEN|RELEASE_NAME|RELEASE_URL|RELEASE_NOTES|RELEASE_PRERELEASE|RELEASE_DRAFT)\b' "$helper" || return 1
+  ! grep -Fq 'https://github.com/StartupBros-com' "$helper" || return 1
   [[ "$(yq -r 'has("concurrency")' "$workflow")" == false ]] || return 1
 
   concurrency_group="$(yq -r '.jobs.announce.concurrency.group' "$workflow")" || return 1
@@ -144,13 +144,11 @@ check_contract() {
   ! grep -Fq 'ACTIONS_ID_TOKEN_REQUEST_URL' "$workflow" || return 1
 
   grep -Fq 'readonly request_body' "$helper" || return 1
-  [[ "$({ grep -Fo -- '--arg releaseId "$RELEASE_ID"' "$helper" || true; } | wc -l)" == 2 ]] || return 1
+  [[ "$({ grep -Fo -- '--arg releaseId "$RELEASE_ID"' "$helper" || true; } | wc -l)" == 1 ]] || return 1
   grep -Fq '{operation: $operation, repository: $repository, releaseId: $releaseId} + (if $notesSummary == "" then {} else {notesSummary: $notesSummary} end)' "$helper" || return 1
   grep -Fq 'local -r request_body="$1" expected_sha="$2" oidc_token="$3"' "$helper" || return 1
   grep -Fq 'request_sha="$(sha256_bytes "$request_body")"' "$helper" || return 1
   grep -Fq 'audience="${TOOL_RELEASES_ENDPOINT}#sha256=$request_sha"' "$helper" || return 1
-  grep -Fxq "readonly LEGACY_OIDC_AUDIENCE='https://github.com/StartupBros-com'" "$helper" || return 1
-  grep -Fq 'audience="$LEGACY_OIDC_AUDIENCE"' "$helper" || return 1
   grep -Fq -- '--data-urlencode "audience=$audience"' "$helper" || return 1
   grep -Fq 'send_request "$request_body" "$request_sha" "$oidc_token"' "$helper" || return 1
   grep -Fq 'actual_sha="$(sha256_bytes "$request_body")"' "$helper" || return 1
@@ -354,8 +352,8 @@ replace_once "$HELPER" "$mutant" \
 expect_contract_reject "omitted release ID body field" "$WORKFLOW" "$mutant"
 mutant="$TMP/helper-numeric-release-id.sh"
 replace_once "$HELPER" "$mutant" \
-  $'      --arg releaseId "$RELEASE_ID" \\\n      --arg notesSummary "$notes" \\' \
-  $'      --argjson releaseId "$RELEASE_ID" \\\n      --arg notesSummary "$notes" \\'
+  $'    --arg releaseId "$RELEASE_ID" \\\n    --arg notesSummary "$notes" \\' \
+  $'    --argjson releaseId "$RELEASE_ID" \\\n    --arg notesSummary "$notes" \\'
 expect_contract_reject "numeric release ID body field" "$WORKFLOW" "$mutant"
 mutant="$TMP/helper-zero-release-id.sh"
 replace_once "$HELPER" "$mutant" '[[ "$1" =~ ^[1-9][0-9]*$ ]]' '[[ "$1" =~ ^(0|[1-9][0-9]*)$ ]]'
