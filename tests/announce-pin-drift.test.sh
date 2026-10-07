@@ -67,6 +67,10 @@ case "$bare" in
   repos/*/contents/.github/workflows/*)
     name="${bare#repos/StartupBros-com/}"; name="${name%%/*}"
     file="${bare##*/}"
+    [ ! -e "$FIX/repo/$name/fail-$file" ] || { echo 'fixture: workflow read failed' >&2; exit 1; }
+    if [ -e "$FIX/repo/$name/invalid-$file" ]; then
+      printf '%s\n' '{"content":"%%%INVALID%%%"}' | emit; exit 0
+    fi
     f="$FIX/repo/$name/wf/$file"
     [ -f "$f" ] || exit 1
     printf '{"content":"%s"}\n' "$(base64 -w0 <"$f")" | emit ;;
@@ -198,6 +202,42 @@ if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'unresolvable source url'; th
 else
   die "a card with a non-https source url is refused, not skipped (rc=$rc): $out"
 fi
+
+# Failed and partial reads must not turn an unknown inventory into green.
+for failure in directory sole-file partial-file decode partial-decode; do
+  reset_fixture; add_consumer alpha "$PIN_CURRENT"; write_manifest alpha
+  case "$failure" in
+    directory) mv "$FIX/repo/alpha/wf" "$FIX/repo/alpha/wf-unavailable" ;;
+    sole-file) touch "$FIX/repo/alpha/fail-release-train.yml" ;;
+    partial-file)
+      cp "$FIX/repo/alpha/wf/release-train.yml" "$FIX/repo/alpha/wf/ci.yml"
+      touch "$FIX/repo/alpha/fail-release-train.yml" ;;
+    decode) touch "$FIX/repo/alpha/invalid-release-train.yml" ;;
+    partial-decode)
+      cp "$FIX/repo/alpha/wf/release-train.yml" "$FIX/repo/alpha/wf/ci.yml"
+      touch "$FIX/repo/alpha/invalid-release-train.yml" ;;
+  esac
+  out="$(run_check)"; rc=$?
+  if [ "$rc" -eq 1 ] && grep -q 'alpha.*UNREADABLE' <<<"$out" && ! grep -q 'fleet current' <<<"$out"; then
+    pass "$failure failure is unreadable, never current"
+  else
+    die "$failure failure was accepted (rc=$rc): $out"
+  fi
+done
+
+for empty in file directory; do
+  reset_fixture; add_consumer alpha NONE; write_manifest alpha
+  case "$empty" in
+    file) : > "$FIX/repo/alpha/wf/ci.yml" ;;
+    directory) mv "$FIX/repo/alpha/wf/ci.yml" "$FIX/repo/alpha/ci.yml" ;;
+  esac
+  out="$(run_check)"; rc=$?
+  if [ "$rc" -eq 0 ] && grep -q 'alpha.*no announce pin' <<<"$out"; then
+    pass "successfully read empty $empty is a nonconsumer"
+  else
+    die "valid empty $empty was refused (rc=$rc): $out"
+  fi
+done
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
