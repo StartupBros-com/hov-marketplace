@@ -13,6 +13,7 @@ set -uo pipefail
 # which selects on the repository's actual pin, and that is where those cases are proven.
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROLL_SCRIPT="${ROLL_SCRIPT:-$ROOT/scripts/announce-pin-roll.sh}"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 PASS=0
@@ -22,7 +23,7 @@ die() { printf 'not ok - %s\n' "$1" >&2; FAIL=$((FAIL + 1)); }
 
 # Sourcing must not run the driver, or every test would trip the usage guard.
 # shellcheck source=/dev/null
-source "$ROOT/scripts/announce-pin-roll.sh"
+source "$ROLL_SCRIPT"
 # The sourced script sets -e for its own run. Left on, the first bare call below that
 # returned nonzero would abort this file mid-suite and lose every later result and the
 # tally. Restore the runner's own flags.
@@ -207,6 +208,202 @@ for bad in "--old $OLD --new $OLD" "--old abc1234 --new $NEW" "--new $NEW" \
     pass "refused: $bad"
   fi
 done
+
+# --- driver subprocesses: inventory and read failures -------------------------
+# Run the real entry point in report mode, with synthetic checkouts and a Git
+# adapter. No consumer fetch, rewrite, commit, or other network operation runs.
+# In particular, an invalid inventory must fail before even visiting a checkout:
+# the same inventory gate precedes the driver's --apply branch.
+DRIVER_BIN="$TMP/driver-bin"
+DRIVER_ROOT="$TMP/driver-root"
+DRIVER_MANIFEST="$TMP/driver-manifest.json"
+DRIVER_GIT_LOG="$TMP/driver-git.log"
+REAL_BASH="$(command -v bash)"
+REAL_JQ="$(command -v jq)"
+REAL_GREP="$(command -v grep)"
+export DRIVER_GIT_LOG REAL_JQ REAL_GREP
+mkdir -p "$DRIVER_BIN" "$TMP/no-jq"
+
+cat > "$DRIVER_BIN/git" <<'STUB'
+#!/bin/bash
+printf '%s\n' "$*" >> "$DRIVER_GIT_LOG"
+case "$3" in
+  fetch) exit "${DRIVER_FETCH_STATUS:-0}" ;;
+  merge-base) exit "${DRIVER_ANCESTRY_STATUS:-0}" ;;
+  grep)
+    case "${DRIVER_GIT_GREP_MODE:-match}" in
+      none) exit 1 ;;
+      error) exit 128 ;;
+      partial-error) printf '.github/workflows/release-train.yml\n'; exit 128 ;;
+      match) printf '.github/workflows/release-train.yml\n' ;;
+      *) exit 99 ;;
+    esac ;;
+  *) exit 99 ;;
+esac
+STUB
+cat > "$DRIVER_BIN/jq" <<'STUB'
+#!/bin/bash
+case "${DRIVER_JQ_MODE:-real}" in
+  read-error) printf 'fixture: manifest read failure\n' >&2; exit 2 ;;
+  partial-error) printf 'https://github.com/acme/alpha.git\n'; exit 2 ;;
+  *) exec "$REAL_JQ" "$@" ;;
+esac
+STUB
+cat > "$DRIVER_BIN/grep" <<'STUB'
+#!/bin/bash
+if [ "${1:-}" = -rhoE ]; then
+  case "${DRIVER_GREP_MODE:-real}" in
+    error) exit 2 ;;
+    partial-error)
+      printf 'hov-tool-drop-announce.yml@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n'
+      exit 2 ;;
+  esac
+fi
+exec "$REAL_GREP" "$@"
+STUB
+chmod +x "$DRIVER_BIN/"{git,jq,grep}
+
+reset_driver() {
+  rm -rf "$DRIVER_ROOT"
+  mkdir -p "$DRIVER_ROOT/alpha/.git" "$DRIVER_ROOT/alpha/.github/workflows"
+  printf 'uses: StartupBros-com/hov-marketplace/.github/workflows/hov-tool-drop-announce.yml@%s\n' \
+    "$OLD" > "$DRIVER_ROOT/alpha/.github/workflows/release-train.yml"
+  printf '{"plugins":[{"source":{"url":"https://github.com/acme/alpha.git"}}]}\n' > "$DRIVER_MANIFEST"
+  : > "$DRIVER_GIT_LOG"
+  export DRIVER_JQ_MODE=real DRIVER_GIT_GREP_MODE=match DRIVER_GREP_MODE=real
+  export DRIVER_FETCH_STATUS=0 DRIVER_ANCESTRY_STATUS=0
+  DRIVER_PATH="$DRIVER_BIN:$PATH"
+}
+run_driver() {
+  DRIVER_OUTPUT="$(PATH="$DRIVER_PATH" MANIFEST="$DRIVER_MANIFEST" \
+    "$REAL_BASH" "$ROLL_SCRIPT" --old "$OLD" --new "$NEW" --prev "$PREV" \
+    --root "$DRIVER_ROOT" "$@" 2>&1)"
+  DRIVER_RC=$?
+}
+inventory_refused() {
+  local label="$1"
+  shift
+  run_driver "$@"
+  if [ "$DRIVER_RC" -ne 0 ] && [ ! -s "$DRIVER_GIT_LOG" ] \
+      && grep -Eq 'error: .*manifest|error: .*jq' <<< "$DRIVER_OUTPUT"; then
+    pass "$label"
+  else
+    die "$label (rc=$DRIVER_RC, git=$(cat "$DRIVER_GIT_LOG")): $DRIVER_OUTPUT"
+  fi
+}
+driver_result() { # <expected status> <expected output> <label>
+  run_driver
+  if [ "$DRIVER_RC" -eq "$1" ] && grep -q "$2" <<< "$DRIVER_OUTPUT"; then
+    pass "$3"
+  else
+    die "$3 (rc=$DRIVER_RC): $DRIVER_OUTPUT"
+  fi
+}
+
+for bad in '{broken' '{}' '{"plugins":{}}' '{"plugins":[null]}' \
+    '{"plugins":[{"source":null}]}' '{"plugins":[{"source":{"url":7}}]}' \
+    '{"plugins":[{"source":{}}]}' '{"plugins":[{"source":{"url":null}}]}' \
+    '{"plugins":[{"source":{"url":""}}]}' \
+    '{"plugins":[{"source":{"url":"https://github.com/acme/alpha.git\nhttps://github.com/acme/beta.git"}}]}'; do
+  reset_driver
+  printf '%s\n' "$bad" > "$DRIVER_MANIFEST"
+  inventory_refused "invalid inventory is refused before any consumer visit: $bad"
+done
+
+reset_driver
+printf '{broken\n' >> "$DRIVER_MANIFEST"
+inventory_refused 'late malformed JSON cannot release an earlier consumer row'
+
+reset_driver
+printf '{"plugins":[{"source":{"url":"https://github.com/acme/alpha.git"}},{"source":{"url":7}}]}\n' > "$DRIVER_MANIFEST"
+inventory_refused 'a late invalid row cannot release an earlier consumer row'
+
+reset_driver
+printf '{"plugins":[{"source":{"url":"https://github.com/acme/alpha.git"}},{"source":{"url":"ssh://github.com/acme/beta"}}]}\n' > "$DRIVER_MANIFEST"
+inventory_refused 'a late unresolvable URL cannot release an earlier consumer row'
+inventory_refused 'selection does not hide a late invalid inventory row' --only alpha
+
+for bad_url in 'https://github.com/acme/' 'https://github.com//alpha' \
+    'https://github.com/acme/.' 'https://github.com/acme/..' \
+    'https://github.com/../alpha' 'https://github.com/acme/.git' \
+    'https://github.com/acme/alpha?ref=main'; do
+  reset_driver
+  printf '{"plugins":[{"source":{"url":"https://github.com/acme/alpha.git"}},{"source":{"url":"%s"}}]}\n' \
+    "$bad_url" > "$DRIVER_MANIFEST"
+  inventory_refused "a late invalid GitHub path is refused before consumer visits: $bad_url"
+done
+
+reset_driver
+cat "$DRIVER_MANIFEST" >> "$TMP/second-document.json"
+cat "$TMP/second-document.json" >> "$DRIVER_MANIFEST"
+inventory_refused 'multiple manifest documents are refused before consumer visits'
+
+reset_driver
+rm "$DRIVER_MANIFEST"
+inventory_refused 'a missing manifest is explicitly refused'
+mkdir "$DRIVER_MANIFEST"
+inventory_refused 'a directory cannot serve as a manifest'
+rmdir "$DRIVER_MANIFEST"
+
+for mode in read-error partial-error; do
+  reset_driver
+  export DRIVER_JQ_MODE="$mode"
+  inventory_refused "jq $mode is refused before any consumer visit"
+done
+reset_driver
+DRIVER_PATH="$TMP/no-jq"
+inventory_refused 'missing jq is refused before any consumer visit'
+
+for mode in error partial-error; do
+  reset_driver
+  export DRIVER_GIT_GREP_MODE="$mode"
+  driver_result 1 'alpha.*REFUSED.*references' "Git candidate $mode is refused"
+done
+reset_driver
+export DRIVER_GIT_GREP_MODE=none
+driver_result 0 'alpha.*nothing to rewrite' 'Git status 1 means no candidate matches, not a read failure'
+
+for mode in error partial-error; do
+  reset_driver
+  export DRIVER_GREP_MODE="$mode"
+  driver_result 1 'alpha.*REFUSED.*workflows' "workflow grep $mode is explicitly refused"
+done
+reset_driver
+printf 'name: unrelated\n' > "$DRIVER_ROOT/alpha/.github/workflows/release-train.yml"
+driver_result 0 'alpha.*does not pin' 'a readable workflow without an announce pin is a nonconsumer'
+reset_driver
+: > "$DRIVER_ROOT/alpha/.github/workflows/release-train.yml"
+driver_result 0 'alpha.*does not pin' 'a readable empty workflow is a nonconsumer'
+reset_driver
+rm "$DRIVER_ROOT/alpha/.github/workflows/release-train.yml"
+driver_result 0 'alpha.*does not pin' 'a readable empty workflows directory is a nonconsumer'
+reset_driver
+rm -r "$DRIVER_ROOT/alpha/.github/workflows"
+driver_result 0 'alpha.*does not pin' 'a checkout without a workflows directory remains a nonconsumer'
+reset_driver
+driver_result 0 'alpha.*would rewrite' 'a valid old-pin consumer still reports its planned rewrite'
+reset_driver
+printf '{"plugins":[{"source":{"url":"https://github.com/acme/alpha"}}]}\n' > "$DRIVER_MANIFEST"
+driver_result 0 'alpha.*would rewrite' 'the optional .git suffix remains supported'
+reset_driver
+printf 'uses: hov-tool-drop-announce.yml@%s\n' "$NEW" > "$DRIVER_ROOT/alpha/.github/workflows/release-train.yml"
+export DRIVER_GIT_GREP_MODE=none
+driver_result 0 'alpha.*already rolled' 'a current consumer with no unfinished references remains current'
+reset_driver
+printf 'uses: hov-tool-drop-announce.yml@%s\n' "$PREV" > "$DRIVER_ROOT/alpha/.github/workflows/release-train.yml"
+driver_result 1 'alpha.*REFUSED.*neither' 'an unexpected pin remains refused'
+reset_driver
+printf 'uses: hov-tool-drop-announce.yml@%s\n' "$NEW" >> "$DRIVER_ROOT/alpha/.github/workflows/release-train.yml"
+driver_result 1 'alpha.*REFUSED.*different shas' 'ambiguous consumer pins remain refused'
+reset_driver
+export DRIVER_FETCH_STATUS=128
+driver_result 1 'alpha.*REFUSED.*fetch' 'unverifiable checkout freshness remains refused'
+reset_driver
+export DRIVER_ANCESTRY_STATUS=1
+driver_result 1 'alpha.*REFUSED.*origin/main' 'a checkout behind origin/main remains refused'
+reset_driver
+printf '{"plugins":[]}\n' > "$DRIVER_MANIFEST"
+driver_result 0 '0 refused' 'an explicitly empty inventory remains a no-op'
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
