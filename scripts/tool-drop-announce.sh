@@ -7,7 +7,7 @@ set -euo pipefail
 # The marketplace manifest in this repo is the single source of truth: a
 # release announces only when the manifest already lists this exact release
 # tuple AND carries a card block for the plugin. This script never writes to
-# the marketplace (repins are reviewed PRs) and holds no deploy key.
+# the marketplace (repins are merged PRs) and holds no deploy key.
 #
 # Auth: a GitHub Actions OIDC token (Authorization: Bearer) minted only after
 # every preflight passes. Its audience binds the token to the SHA-256 digest of
