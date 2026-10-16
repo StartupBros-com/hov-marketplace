@@ -37,6 +37,7 @@ cat > "$TMP/bin/gh" <<'STUBGH'
 #!/usr/bin/env bash
 set -uo pipefail
 path="$2"; shift 2
+printf '%s\n' "$path" >> "$FIX/gh-calls"
 jqexpr=""
 while [ $# -gt 0 ]; do
   case "$1" in --jq) jqexpr="$2"; shift 2 ;; *) shift ;; esac
@@ -239,5 +240,51 @@ for empty in file directory; do
   fi
 done
 
+for manifest_case in malformed trailing multiple-documents whitespace nonobject missing-plugins null-plugins object-plugins invalid-row missing-source null-source missing-url null-url number-url empty-url newline-url nul-url late-invalid-row; do
+  reset_fixture
+  case "$manifest_case" in
+    malformed) payload='{bad json' ;;
+    trailing) payload='{"plugins":[]} trailing' ;;
+    multiple-documents) payload='{"plugins":[]} {"plugins":[]}' ;;
+    whitespace) payload=' ' ;;
+    nonobject) payload='[]' ;;
+    missing-plugins) payload='{}' ;;
+    null-plugins) payload='{"plugins":null}' ;;
+    object-plugins) payload='{"plugins":{}}' ;;
+    invalid-row) payload='{"plugins":[null]}' ;;
+    missing-source) payload='{"plugins":[{}]}' ;;
+    null-source) payload='{"plugins":[{"source":null}]}' ;;
+    missing-url) payload='{"plugins":[{"source":{}}]}' ;;
+    null-url) payload='{"plugins":[{"source":{"url":null}}]}' ;;
+    number-url) payload='{"plugins":[{"source":{"url":4}}]}' ;;
+    empty-url) payload='{"plugins":[{"source":{"url":""}}]}' ;;
+    newline-url) payload='{"plugins":[{"source":{"url":"https://github.com/a/b\n"}}]}' ;;
+    nul-url) payload='{"plugins":[{"source":{"url":"https://github.com/a/b\u0000"}}]}' ;;
+    late-invalid-row) payload='{"plugins":[{"source":{"url":"https://github.com/StartupBros-com/alpha.git"}},{"source":{}}]}' ;;
+  esac
+  printf '%s\n' "$payload" > "$FIX/manifest.json"
+  out="$(run_check)"; rc=$?
+  if [ "$rc" -ne 0 ] && ! grep -q 'fleet current' <<< "$out" && [ ! -s "$FIX/gh-calls" ]; then
+    pass "$manifest_case inventory fails closed"
+  else
+    die "$manifest_case inventory was accepted (rc=$rc): $out"
+  fi
+done
+reset_fixture; write_manifest
+out="$(run_check)"; rc=$?
+if [ "$rc" -eq 0 ] && grep -q 'fleet current' <<< "$out"; then
+  pass "explicit empty inventory remains valid"
+else
+  die "explicit empty inventory refused (rc=$rc): $out"
+fi
+reset_fixture; add_consumer alpha "$PIN_CURRENT"
+printf '%s\n' '{"unrelated":null,"plugins":[{"name":42,"source":{"url":"https://github.com/StartupBros-com/alpha","unrelated":[]}}]}' > "$FIX/manifest.json"
+out="$(run_check)"; rc=$?
+if [ "$rc" -eq 0 ] && grep -q 'alpha.*current' <<< "$out"; then
+  pass "unconsumed fields and URL without git suffix remain valid"
+else
+  die "valid traversed fields refused (rc=$rc): $out"
+fi
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
+

@@ -70,8 +70,10 @@ from pro-gate, generalized in hov-marketplace#118): `auto-release.yml`,
    `<plugin> vX.Y.Z` from the notes file (auto-notes with a warning if the
    file is missing or has no usable Highlights).
 4. `repin-reconcile` here sees the draft within the hour and opens the card
-   PR (version, tag, releaseId, sha). Review and merge it; the validator
-   resolves the tag to the pinned commit.
+   PR (version, tag, releaseId, sha). Merge it once both required checks
+   pass; the validator resolves the tag to the pinned commit. A PR that
+   changes only those pin fields takes no review round. A card PR that
+   also changes copy gets a normal review.
 5. Dispatch `Publish staged release` in the plugin repo with the tag. It
    refuses until the live card names that exact release, then flips the
    draft to published with `--latest`. The single publish event announces.
