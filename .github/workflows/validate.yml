@@ -24,6 +24,8 @@ jobs:
       - name: Lint Tool Drop announce scripts
         run: >-
           shellcheck scripts/tool-drop-announce.sh
+          scripts/provision-ci-tools.sh
+          tests/provision-ci-tools.test.sh
           scripts/repin-reconcile.sh
           scripts/announce-pin-drift.sh
           scripts/announce-pin-roll.sh
@@ -33,6 +35,8 @@ jobs:
           tests/repin-reconcile.test.sh
           tests/announce-pin-drift.test.sh
           tests/announce-pin-roll.test.sh
+      - name: Test pinned CI tool provisioning without network access
+        run: bash ./tests/provision-ci-tools.test.sh
       - name: Validate marketplace without network access
         env:
           BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
