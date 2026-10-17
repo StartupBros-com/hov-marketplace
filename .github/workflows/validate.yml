@@ -25,13 +25,11 @@ jobs:
         run: >-
           shellcheck scripts/tool-drop-announce.sh
           scripts/repin-reconcile.sh
-          scripts/announce-pin-drift.sh
           scripts/announce-pin-roll.sh
           tests/tool-drop-announce.test.sh
           tests/tool-drop-announce-retry.test.sh
           tests/notes-summary.test.sh
           tests/repin-reconcile.test.sh
-          tests/announce-pin-drift.test.sh
           tests/announce-pin-roll.test.sh
       - name: Validate marketplace without network access
         env:
@@ -47,8 +45,6 @@ jobs:
         run: bash ./tests/notes-summary.test.sh
       - name: Run repin reconcile tests
         run: bash ./tests/repin-reconcile.test.sh
-      - name: Run announce pin drift tests
-        run: bash ./tests/announce-pin-drift.test.sh
       - name: Run announce pin roll tests
         run: bash ./tests/announce-pin-roll.test.sh
 
