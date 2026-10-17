@@ -112,36 +112,48 @@ PY
 # to mention the new sha elsewhere is selected on its pin, and the unrelated mention is
 # left exactly as it is.
 roll_candidates() { # <dir> <pin> <prev> <old> <new>
-  local dir="$1" pin="$2" prev="$3" old="$4" new="$5"
+  local dir="$1" pin="$2" prev="$3" old="$4" new="$5" status=0
   if [ "$pin" = "$new" ]; then
     [ -n "$prev" ] || return 0
-    git -C "$dir" grep -l -F -e "$prev" -- . 2>/dev/null || true
-    return 0
-  fi
-  if [ -n "$prev" ]; then
-    git -C "$dir" grep -l -F -e "$old" -e "$prev" -- . 2>/dev/null || true
+    git -C "$dir" grep -l -F -e "$prev" -- . 2>/dev/null || status=$?
+  elif [ -n "$prev" ]; then
+    git -C "$dir" grep -l -F -e "$old" -e "$prev" -- . 2>/dev/null || status=$?
   else
-    git -C "$dir" grep -l -F -e "$old" -- . 2>/dev/null || true
+    git -C "$dir" grep -l -F -e "$old" -- . 2>/dev/null || status=$?
   fi
+  # Git uses 1 for a successful search with no matches; other failures cannot
+  # establish that there are no unfinished references. The caller discards any
+  # partial output when this function fails.
+  [ "$status" -eq 0 ] || [ "$status" -eq 1 ]
 }
 
-# owner/repo from a canonical card source url, refused rather than guessed — the same rule
-# as repin-reconcile and announce-pin-drift.
+# Owner/repo from a canonical card source URL. Use the marketplace validator's
+# path character grammar, retaining this driver's optional .git suffix. Empty
+# or dot path components cannot identify a consumer checkout.
 repo_from_url() {
   local url="$1" path
   case "$url" in https://github.com/*) path="${url#https://github.com/}" ;; *) return 1 ;; esac
   path="${path%.git}"
-  case "$path" in */*/*|'') return 1 ;; */*) printf '%s\n' "$path" ;; *) return 1 ;; esac
+  [[ "$path" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || return 1
+  case "${path%%/*}" in .|..) return 1 ;; esac
+  case "${path##*/}" in .|..) return 1 ;; esac
+  printf '%s\n' "$path"
 }
 
 # Every announce pin a checkout carries, deduplicated. Scans the whole workflows directory
 # rather than assuming release-train.yml, and is what lets this agree with the drift check
 # about which sha a repository is actually on.
 checkout_pins() { # <dir>
-  local dir="$1"
+  local dir="$1" matches status
   [ -d "$dir/.github/workflows" ] || return 0
-  grep -rhoE 'hov-tool-drop-announce\.yml@[0-9a-f]{40}' "$dir/.github/workflows" 2>/dev/null \
-    | sed 's/.*@//' | sort -u
+  if matches="$(grep -rhoE 'hov-tool-drop-announce\.yml@[0-9a-f]{40}' "$dir/.github/workflows" 2>/dev/null)"; then
+    printf '%s\n' "$matches" | sed 's/.*@//' | sort -u
+  else
+    status=$?
+    # An empty, readable directory/file or unrelated workflow is a nonconsumer.
+    # Preserve actual read failures instead of accepting a partial pin set.
+    [ "$status" -eq 1 ] || return "$status"
+  fi
 }
 
 main() {
@@ -174,9 +186,34 @@ main() {
   [ -z "$PREV_SHA" ] || [ "$PREV_SHA" != "$OLD_SHA" ] || fail "--prev and --old are the same sha"
   [ -z "$PREV_SHA" ] || [ "$PREV_SHA" != "$NEW_SHA" ] || fail "--prev and --new are the same sha"
   [ -s "$MANIFEST" ] || fail "manifest not found: $MANIFEST"
+  command -v jq >/dev/null 2>&1 || fail "jq is required to read manifest: $MANIFEST"
+
+  # Buffer and validate the complete inventory before visiting any consumer.
+  # A process substitution hides jq's status, and streamed rows may be followed
+  # by a parse error. Neither may cause a partial rollout in --apply mode.
+  # Validate only the fields this driver traverses; the marketplace validator
+  # owns the rest of the card contract. An explicit empty array remains a no-op.
+  local urls
+  if ! urls="$(jq -rs '
+    if length != 1 then error("expected one marketplace object") else .[0] end
+    | if type != "object" or (.plugins | type) != "array"
+      then error("expected a plugins array") else .plugins end
+    | if all(.[];
+        type == "object" and (.source | type) == "object" and
+        (.source.url | type == "string" and length > 0 and
+          (test("[[:space:][:cntrl:]]") | not)))
+      then .[].source.url else error("invalid consumer source URL") end
+  ' "$MANIFEST")"; then
+    fail "could not read valid consumer inventory from manifest: $MANIFEST"
+  fi
 
   local rolled=0 current=0 refused=0
   local url repo name dir pins pin_count pin rel changed c candidates
+  while IFS= read -r url; do
+    [ -n "$url" ] || continue
+    repo_from_url "$url" >/dev/null || fail "manifest has an unresolvable source url: $url"
+  done <<< "$urls"
+
   while IFS= read -r url; do
     [ -n "$url" ] || continue
     repo="$(repo_from_url "$url")" || fail "unresolvable source url: $url"
@@ -205,7 +242,10 @@ main() {
 
     # Classify by the pin the checkout actually carries, so this and the drift check never
     # disagree about a repository's state.
-    pins="$(checkout_pins "$dir")"
+    if ! pins="$(checkout_pins "$dir")"; then
+      printf '%-16s REFUSED  could not read all workflows\n' "$name"
+      refused=$((refused + 1)); continue
+    fi
     pin_count="$(printf '%s' "$pins" | grep -c . || true)"
     if [ "$pin_count" -eq 0 ]; then
       printf '%-16s ok       does not pin the announce workflow\n' "$name"; continue
@@ -220,7 +260,10 @@ main() {
       refused=$((refused + 1)); continue
     fi
 
-    candidates="$(roll_candidates "$dir" "$pin" "$PREV_SHA" "$OLD_SHA" "$NEW_SHA")"
+    if ! candidates="$(roll_candidates "$dir" "$pin" "$PREV_SHA" "$OLD_SHA" "$NEW_SHA")"; then
+      printf '%-16s REFUSED  could not read pin references\n' "$name"
+      refused=$((refused + 1)); continue
+    fi
     if [ -z "$candidates" ]; then
       if [ "$pin" = "$NEW_SHA" ]; then
         printf '%-16s ok       already rolled\n' "$name"; current=$((current + 1))
@@ -247,7 +290,7 @@ main() {
     fi
     printf '%-16s rewrote:%s\n' "$name" "$changed"
     rolled=$((rolled + 1))
-  done < <(jq -r '.plugins[]? | .source.url // empty' "$MANIFEST")
+  done <<< "$urls"
 
   printf '\n%s to roll or rolled, %s already current, %s refused\n' "$rolled" "$current" "$refused"
   if [ "$MODE" = report ]; then
