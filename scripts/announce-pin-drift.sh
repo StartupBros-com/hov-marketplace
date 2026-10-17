@@ -46,6 +46,27 @@ ANNOUNCE_WORKFLOW="${ANNOUNCE_WORKFLOW:-hov-tool-drop-announce.yml}"
 
 [ -s "$MANIFEST" ] || fail "manifest not found: $MANIFEST"
 
+# Read and validate the complete inventory before visiting any consumer. A
+# process substitution would hide jq failures and could turn partial input into
+# a false "fleet current". Validate only the fields this monitor consumes.
+if ! urls="$(jq -sr '
+  if length != 1 then error("expected one manifest object")
+  else .[0]
+  | if type != "object" then error("manifest must be an object")
+    elif (.plugins | type) != "array" then error("plugins must be an array")
+    elif any(.plugins[];
+      if type != "object" then true
+      elif (.source | type) != "object" then true
+      elif (.source.url | type) != "string" then true
+      else (.source.url == "" or (.source.url | explode | any(. < 32 or . == 127)))
+      end) then error("each plugin must have a nonempty source URL without control characters")
+    else .plugins[].source.url
+    end
+  end
+' "$MANIFEST")"; then
+  fail "could not read complete consumer inventory: $MANIFEST"
+fi
+
 # owner/repo from a canonical card source url. Anything that is not a github.com https
 # url is refused rather than guessed, matching repin-reconcile: a card we cannot resolve
 # is a card we must not silently skip.
@@ -73,14 +94,23 @@ helper_blob_at() { # <ref>
 # directory rather than assuming release-train.yml: papercut also pins the announce
 # workflow from ci.yml, and a repo that pins two DIFFERENT shas is itself a finding.
 consumer_pins() { # <owner/repo> <default-branch>
-  local repo="$1" branch="$2" name body
+  local repo="$1" branch="$2" name body names
+  # A process substitution hides the listing command's status. Capture it
+  # first so an unavailable inventory never means "no announce workflow".
+  if ! names="$(gh api "repos/$repo/contents/.github/workflows?ref=$branch" \
+      --jq '.[] | select(.type == "file") | .name')"; then
+    printf 'could not list workflows for %s at %s\n' "$repo" "$branch" >&2
+    return 1
+  fi
   while IFS= read -r name; do
     [ -n "$name" ] || continue
-    body="$(gh api "repos/$repo/contents/.github/workflows/$name?ref=$branch" --jq '.content' 2>/dev/null | base64 -d 2>/dev/null || true)"
+    if ! body="$(gh api "repos/$repo/contents/.github/workflows/$name?ref=$branch" --jq '.content' | base64 -d)"; then
+      printf 'could not read/decode workflow %s for %s at %s\n' "$name" "$repo" "$branch" >&2
+      return 1
+    fi
     [ -n "$body" ] || continue
     printf '%s\n' "$body" | grep -oE "$ANNOUNCE_WORKFLOW@[0-9a-f]{40}" | sed "s/^$ANNOUNCE_WORKFLOW@//" || true
-  done < <(gh api "repos/$repo/contents/.github/workflows?ref=$branch" \
-             --jq '.[] | select(.type == "file") | .name' 2>/dev/null || true) | sort -u
+  done <<< "$names" | sort -u
 }
 
 default_branch="$(gh api "repos/$SELF_REPO" --jq '.default_branch' 2>/dev/null || true)"
@@ -107,7 +137,10 @@ while IFS= read -r url; do
     problems=$((problems + 1)); continue
   fi
 
-  pins="$(consumer_pins "$repo" "$branch")"
+  if ! pins="$(consumer_pins "$repo" "$branch")"; then
+    record "$(printf '%s\t%s\t%s' "$name" '-' 'UNREADABLE: could not read all workflows')"
+    problems=$((problems + 1)); continue
+  fi
   count="$(printf '%s' "$pins" | grep -c . || true)"
 
   if [ "$count" -eq 0 ]; then
@@ -130,7 +163,7 @@ while IFS= read -r url; do
     record "$(printf '%s\t%s\t%s' "$name" "${pins:0:7}" 'DRIFTED: helper differs from the default branch')"
     problems=$((problems + 1))
   fi
-done < <(jq -r '.plugins[]? | .source.url // empty' "$MANIFEST")
+done <<< "$urls"
 
 printf '%-16s %-9s %s\n' PLUGIN PIN STATUS
 printf '%s' "$rows" | while IFS=$'\t' read -r a b c; do
@@ -166,3 +199,4 @@ if [ "$problems" -eq 0 ]; then
 fi
 printf '\n%s consumer(s) stale, ambiguous or unreadable\n' "$problems" >&2
 exit 1
+
