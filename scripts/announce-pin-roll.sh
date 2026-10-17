@@ -3,8 +3,7 @@ set -euo pipefail
 
 # announce-pin-roll.sh — rewrite every catalog plugin's announce pin to a new helper sha.
 #
-# The companion to announce-pin-drift.sh: that one answers "is the fleet current", this one
-# performs the edit. It edits files and stops. Committing, pushing and opening PRs stays
+# It edits files and stops. Committing, pushing and opening PRs stays
 # with the caller, deliberately: an earlier draft did all three across nine repositories on
 # a bare `git add -u`, which sweeps every locally-modified tracked file — a colleague's WIP
 # included — into a commit titled "pin the announce workflow". The encoded knowledge here
@@ -33,8 +32,8 @@ set -euo pipefail
 # verified, a repository pinning two different shas, and a pin that is neither the old nor
 # the new sha are all reported and counted; none is quietly folded into "already rolled".
 # That last one matters most: a consumer more than one hop behind mentions neither sha, and
-# an earlier draft printed "already rolled" for it — a clean summary for a repository the
-# drift check still calls broken.
+# an earlier draft printed "already rolled" for it — a clean summary for a repository still
+# running a stale helper.
 #
 # Exit codes:
 #   0  every consumer is rolled or already current
@@ -126,7 +125,7 @@ roll_candidates() { # <dir> <pin> <prev> <old> <new>
 }
 
 # owner/repo from a canonical card source url, refused rather than guessed — the same rule
-# as repin-reconcile and announce-pin-drift.
+# as repin-reconcile.
 repo_from_url() {
   local url="$1" path
   case "$url" in https://github.com/*) path="${url#https://github.com/}" ;; *) return 1 ;; esac
@@ -135,8 +134,7 @@ repo_from_url() {
 }
 
 # Every announce pin a checkout carries, deduplicated. Scans the whole workflows directory
-# rather than assuming release-train.yml, and is what lets this agree with the drift check
-# about which sha a repository is actually on.
+# rather than assuming release-train.yml, so a pin in any workflow file is found.
 checkout_pins() { # <dir>
   local dir="$1"
   [ -d "$dir/.github/workflows" ] || return 0
@@ -203,8 +201,7 @@ main() {
       refused=$((refused + 1)); continue
     fi
 
-    # Classify by the pin the checkout actually carries, so this and the drift check never
-    # disagree about a repository's state.
+    # Classify by the pin the checkout actually carries, not by which shas its files mention.
     pins="$(checkout_pins "$dir")"
     pin_count="$(printf '%s' "$pins" | grep -c . || true)"
     if [ "$pin_count" -eq 0 ]; then
