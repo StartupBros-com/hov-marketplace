@@ -69,18 +69,22 @@ from pro-gate, generalized in hov-marketplace#118): `auto-release.yml`,
    whose CI runs are green, then stages a **draft** release titled
    `<plugin> vX.Y.Z` from the notes file (auto-notes with a warning if the
    file is missing or has no usable Highlights).
-4. `repin-reconcile` here sees the draft within the hour, opens the card
-   PR (version, tag, releaseId, sha), and requests auto-merge on it once
+4. `repin-reconcile` here sees the draft at its next scheduled run. That
+   is four times an hour on paper, but GitHub delays and drops scheduled
+   runs, so allow longer, or start one now with
+   `gh workflow run repin-reconcile.yml --repo StartupBros-com/hov-marketplace`.
+   It opens the card PR (version, tag, releaseId, sha), and requests
+   auto-merge on it once
    `scripts/repin-land.sh` proves the PR changes only the manifest and
    carries exactly the reconciler's output. GitHub merges it when both
    required checks pass; the validator resolves the tag to the pinned
    commit. The same run closes repin PRs the new one superseded. A card PR
    that also changes copy is a human PR and gets a normal review.
-5. The merge's push to `main` re-runs `repin-reconcile` (the hourly run
+5. The merge's push to `main` re-runs `repin-reconcile` (the scheduled run
    is the backstop), and `scripts/repin-publish.sh` publishes the draft the
    card now pins and marks it latest. It re-checks tag, version, commit, default-branch
    ancestry and that every asset finished uploading; while assets are still
-   uploading it waits for the next hourly run. Right before publishing it
+   uploading it waits for the next scheduled run. Right before publishing it
    re-reads the card from live `main` and skips a release `main` no longer
    pins (a newer repin, or a revert holding it back). The single publish event
    announces. `Publish staged release` in the plugin repo still works by

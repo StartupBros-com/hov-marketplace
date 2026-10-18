@@ -36,13 +36,17 @@ name: Repin reconcile
 # PR to open by hand.
 
 on:
-  # A merged repin publishes its draft at once instead of at the next hourly run.
+  # A merged repin publishes its draft at once instead of at the next scheduled run.
   push:
     branches: [main]
     paths: ['.claude-plugin/marketplace.json']
   schedule:
-    # Off the hour on purpose: :00 is where every scheduled job on GitHub piles up.
-    - cron: '23 * * * *'
+    # Nothing wakes this workflow when a plugin stages a draft, so the schedule sets
+    # how long a draft waits for its card. GitHub delays and drops scheduled runs: on
+    # 2026-10-17 the hourly '23 * * * *' ran seven times, 2.2-5.3 hours apart. Four ticks
+    # an hour, all off :00 (where every scheduled job on GitHub piles up), give it
+    # more chances. A run with no drift opens nothing and takes about 30 seconds.
+    - cron: '8,23,38,53 * * * *'
   workflow_dispatch:
     inputs:
       only_plugin:
@@ -112,7 +116,7 @@ jobs:
             echo "drift=true" >> "$GITHUB_OUTPUT"
             # Content-addressed branch name: the SAME drift on the SAME main always
             # produces the SAME branch, so a second run finds the PR already open
-            # and opens nothing. That is what makes an hourly schedule safe. Main's
+            # and opens nothing. That is what makes a frequent schedule safe. Main's
             # sha is in the key because the required checks demand an up-to-date
             # branch: once main moves, the old PR can never merge, so the next run
             # opens a fresh one and repin-land.sh closes the old.
