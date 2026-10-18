@@ -1,0 +1,163 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Publish every staged DRAFT release that the marketplace manifest already names.
+#
+# Draft-first staging leaves a plugin release as a draft until the card in this
+# manifest carries its releaseId, because publishing fires the announcement and an
+# announcement must find the card already current. Once the repin lands, the draft
+# has to be published. That used to be a hand-run "Publish staged release"
+# workflow in each plugin repository; this script is the same convergence step,
+# run from here: it observes the card and the release, and publishes only when
+# the two agree.
+#
+# Only the release a card pins by releaseId is ever touched. Older drafts that no
+# card names (a superseded staging run, an abandoned version) can never match and
+# are left alone.
+#
+# Before publishing it re-checks, against the release itself, everything the
+# per-repository publish workflow checked: the tag, the version, the tag commit,
+# and that the commit is on the default branch. It also refuses while assets are
+# still uploading: a release can be created as a draft before its assets finish
+# (pro-gate's runtime tarball), and the reconciler may pin it inside that window.
+#
+# Usage:
+#   scripts/repin-publish.sh            # publish matching drafts
+#   DRY_RUN=1 scripts/repin-publish.sh  # report only
+#
+# Env:
+#   MANIFEST     path to marketplace.json (default: .claude-plugin/marketplace.json)
+#   ONLY_PLUGIN  restrict to one plugin name
+#   GH_TOKEN     must see the plugin repositories' drafts (push-capable)
+#
+# Exit codes:
+#   0  every pinned release is published, was published now, or is still uploading
+#   1  a read failure or a card/release disagreement on at least one plugin;
+#      the other plugins are still processed
+
+warn() { printf 'error: %s\n' "$*" >&2; }
+
+MANIFEST="${MANIFEST:-.claude-plugin/marketplace.json}"
+DRY_RUN="${DRY_RUN:-0}"
+ONLY_PLUGIN="${ONLY_PLUGIN:-}"
+
+[ -s "$MANIFEST" ] || { warn "manifest not found: $MANIFEST"; exit 1; }
+
+# Same rule as repin-reconcile.sh: anything but a github.com https url is refused.
+repo_from_url() {
+  local url="$1" path
+  case "$url" in
+    https://github.com/*) path="${url#https://github.com/}" ;;
+    *) return 1 ;;
+  esac
+  path="${path%.git}"
+  case "$path" in
+    */*/*|'') return 1 ;;
+    */*) printf '%s\n' "$path" ;;
+    *) return 1 ;;
+  esac
+}
+
+# Returns 1 on any read failure or disagreement. Called in an || list, so set -e
+# is off in here and every command that can fail says so explicitly.
+publish_card() {
+  local name="$1" card url repo card_version card_tag card_id card_sha
+  local rel tag is_draft is_pre sha obj_type default_branch compare_status
+  local pending have_assets prev_assets
+
+  card="$(jq -ce --arg n "$name" '
+      [ .plugins[] | select(type == "object" and .name == $n) ] as $c
+      | if ($c | length) != 1 then error("not exactly one card") else $c[0] end
+    ' "$MANIFEST")" || { warn "manifest does not hold exactly one card for $name"; return 1; }
+
+  card_id="$(jq -r '.metadata.releaseId // ""' <<<"$card")"
+  if [ -z "$card_id" ]; then
+    printf 'skip %s: the card pins no releaseId\n' "$name"
+    return 0
+  fi
+  card_version="$(jq -r '.metadata.version // ""' <<<"$card")"
+  card_tag="$(jq -r '.metadata.releaseTag // ""' <<<"$card")"
+  card_sha="$(jq -r '.source.sha // ""' <<<"$card")"
+  url="$(jq -r '.source.url // empty' <<<"$card")"
+  repo="$(repo_from_url "$url")" || { warn "$name has an unresolvable source.url: $url"; return 1; }
+
+  rel="$(gh api "repos/$repo/releases/$card_id" 2>/dev/null)" \
+    || { warn "could not read release $card_id of $repo"; return 1; }
+  is_draft="$(jq -r '.draft' <<<"$rel")"
+  tag="$(jq -r '.tag_name // ""' <<<"$rel")"
+  if [ "$is_draft" = false ]; then
+    printf 'published %s: %s\n' "$name" "$tag"
+    return 0
+  fi
+  [ "$is_draft" = true ] || { warn "release $card_id of $repo has no draft flag"; return 1; }
+
+  is_pre="$(jq -r '.prerelease' <<<"$rel")"
+  [ "$is_pre" = false ] || { warn "$name pins prerelease $tag; the marketplace never publishes one"; return 1; }
+  [ "$tag" = "$card_tag" ] \
+    || { warn "$name: release $card_id is tagged '$tag' but the card says '$card_tag'"; return 1; }
+  [ "$card_version" = "${tag#v}" ] \
+    || { warn "$name: card version '$card_version' does not match tag $tag"; return 1; }
+
+  sha="$(gh api "repos/$repo/git/ref/tags/${tag}" --jq '.object.sha' 2>/dev/null)" \
+    || { warn "could not resolve tag $tag in $repo"; return 1; }
+  obj_type="$(gh api "repos/$repo/git/ref/tags/${tag}" --jq '.object.type' 2>/dev/null)" \
+    || { warn "could not read the tag type of $tag in $repo"; return 1; }
+  if [ "$obj_type" = tag ]; then
+    sha="$(gh api "repos/$repo/git/tags/$sha" --jq '.object.sha' 2>/dev/null)" \
+      || { warn "could not dereference annotated tag $tag in $repo"; return 1; }
+  fi
+  [ "$sha" = "$card_sha" ] \
+    || { warn "$name: $tag is commit ${sha:0:12} but the card pins ${card_sha:0:12}"; return 1; }
+
+  default_branch="$(gh api "repos/$repo" --jq '.default_branch' 2>/dev/null)" \
+    || { warn "could not read the default branch of $repo"; return 1; }
+  compare_status="$(gh api "repos/$repo/compare/${default_branch}...${sha}" --jq '.status' 2>/dev/null)" \
+    || { warn "could not compare $tag (${sha:0:8}) against $default_branch in $repo"; return 1; }
+  case "$compare_status" in
+    identical|behind) ;;
+    *) warn "$name: $tag (${sha:0:8}) is not on $default_branch (compare status: ${compare_status:-empty})"; return 1 ;;
+  esac
+
+  # Assets: every one finished uploading, and at least as many as the newest
+  # published release carried. Fewer means the staging run is still uploading,
+  # or failed partway; either way the next run decides again.
+  pending="$(jq '[.assets[]? | select(.state != "uploaded")] | length' <<<"$rel")" \
+    || { warn "could not read the assets of $tag in $repo"; return 1; }
+  have_assets="$(jq '[.assets[]? | select(.state == "uploaded")] | length' <<<"$rel")"
+  prev_assets="$(gh api "repos/$repo/releases?per_page=100" --jq '
+      [ .[] | select(type == "object" and .draft == false and .prerelease == false) ]
+      | sort_by(.published_at) | last | (.assets // []) | length
+    ' 2>/dev/null)" \
+    || { warn "could not read the published releases of $repo"; return 1; }
+  if [ "$pending" -ne 0 ] || [ "$have_assets" -lt "$prev_assets" ]; then
+    printf '::notice::%s %s is pinned but its assets are incomplete (%s uploaded, %s pending, previous release had %s); not publishing yet\n' \
+      "$name" "$tag" "$have_assets" "$pending" "$prev_assets"
+    return 0
+  fi
+
+  if [ "$DRY_RUN" = 1 ]; then
+    printf 'would publish %s: %s (releaseId %s, dry run)\n' "$name" "$tag" "$card_id"
+    return 0
+  fi
+  is_draft="$(gh api -X PATCH "repos/$repo/releases/$card_id" -F draft=false -f make_latest=true --jq '.draft' 2>/dev/null)" \
+    || { warn "could not publish $tag in $repo"; return 1; }
+  [ "$is_draft" = false ] || { warn "publishing $tag in $repo left it a draft"; return 1; }
+  printf 'published now %s: %s (releaseId %s)\n' "$name" "$tag" "$card_id"
+}
+
+plugins="$(jq -r '.plugins[] | select(type == "object") | .name' "$MANIFEST")" \
+  || { warn "could not read plugin names from $MANIFEST"; exit 1; }
+
+failed=0
+while IFS= read -r name; do
+  [ -n "$name" ] || continue
+  if [ -n "$ONLY_PLUGIN" ] && [ "$name" != "$ONLY_PLUGIN" ]; then
+    continue
+  fi
+  publish_card "$name" || failed=$((failed + 1))
+done <<<"$plugins"
+
+if [ "$failed" -ne 0 ]; then
+  warn "$failed plugin(s) could not be checked or published; see above"
+  exit 1
+fi

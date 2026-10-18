@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Tests for scripts/repin-publish.sh.
+#
+# The publish is the one step here that writes outside this repository, and it
+# fires an announcement, so the properties worth proving are: it publishes the
+# pinned draft exactly once when card and release agree; it never publishes when
+# they disagree or a read fails; it waits while assets are still uploading; and
+# one plugin's failure does not stop another plugin's publish.
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+PASS=0
+
+pass() { printf 'ok - %s\n' "$1"; PASS=$((PASS + 1)); }
+die() { printf 'not ok - %s\n' "$1" >&2; exit 1; }
+
+mkdir -p "$TMP/bin"
+export FIX="$TMP/fix" CALLS="$TMP/calls"
+
+# Stub gh api: serves each fake repository acme/<name> from $FIX/<name>/ and
+# records every PATCH in $CALLS. It honours --jq, because the script relies on gh
+# applying that filter; a stub that ignored it would test a shape production never sees.
+cat > "$TMP/bin/gh" <<'STUBGH'
+#!/usr/bin/env bash
+set -e
+[ "$1" = api ] || { printf 'unexpected gh command: %s\n' "$*" >&2; exit 1; }
+shift
+method=GET path='' jqexpr=''
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -X) method="$2"; shift 2 ;;
+    --jq) jqexpr="$2"; shift 2 ;;
+    -F|-f) shift 2 ;;
+    *) path="$1"; shift ;;
+  esac
+done
+emit() { if [ -n "$jqexpr" ]; then jq -r "$jqexpr"; else cat; fi; }
+repo="${path#repos/acme/}"; name="${repo%%/*}"; rest="${repo#"$name"}"
+dir="$FIX/$name"
+[ -d "$dir" ] || { printf '{"message":"Not Found"}\n' >&2; exit 1; }
+case "$method $rest" in
+  'PATCH /releases/'*) printf 'PATCH %s\n' "$path" >> "$CALLS"; printf '{"draft":false}\n' | emit ;;
+  'GET /releases/'*)
+    [ -s "$dir/release.json" ] || { printf '{"message":"Not Found"}\n' >&2; exit 1; }
+    emit < "$dir/release.json" ;;
+  'GET /releases?per_page=100') emit < "$dir/releases.json" ;;
+  'GET /git/ref/tags/'*) emit < "$dir/tagref.json" ;;
+  'GET /compare/'*)
+    status="$(cat "$dir/compare")"
+    if [ "$status" = FAIL ]; then printf '{"message":"rate limited"}\n' >&2; exit 1; fi
+    printf '{"status":"%s"}\n' "$status" | emit ;;
+  'GET ') printf '{"default_branch":"main"}\n' | emit ;;
+  *) printf 'unexpected gh api: %s %s\n' "$method" "$path" >&2; exit 1 ;;
+esac
+STUBGH
+chmod +x "$TMP/bin/gh"
+
+SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+OTHER_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+UP='{"name":"a.tar.gz","state":"uploaded"}'
+
+# fixture <name> <draft> <assets json array> [compare status] [tag commit]
+# The release is id 900 tagged v2.0.0; the newest published release before it carried
+# two uploaded assets, as pro-gate's runtime tarball and checksum do.
+fixture() {
+  local d="$FIX/$1"
+  mkdir -p "$d"
+  jq -n --argjson draft "$2" --argjson assets "$3" \
+    '{id: 900, tag_name: "v2.0.0", draft: $draft, prerelease: false, assets: $assets}' > "$d/release.json"
+  jq -n --argjson assets "[$UP,$UP]" \
+    '[{id: 800, tag_name: "v1.0.0", draft: false, prerelease: false,
+       published_at: "2026-08-01T00:00:00Z", assets: $assets}]' > "$d/releases.json"
+  printf '%s\n' "${4:-behind}" > "$d/compare"
+  printf '{"object":{"sha":"%s","type":"commit"}}\n' "${5:-$SHA}" > "$d/tagref.json"
+}
+
+# manifest <dest> <name>... : one card per name, each pinning v2.0.0 / 900 / $SHA.
+manifest() {
+  local dest="$1"; shift
+  printf '%s\n' "$@" | jq -R . | jq -s --arg s "$SHA" '{plugins: map({
+      name: .,
+      source: {source: "url", url: "https://github.com/acme/\(.).git", sha: $s},
+      metadata: {version: "2.0.0", releaseId: 900, releaseTag: "v2.0.0"}})}' > "$dest"
+}
+
+run_publish() { # extra env as arguments
+  : > "$CALLS"
+  env PATH="$TMP/bin:$PATH" MANIFEST="$TMP/m.json" "$@" \
+    bash "$ROOT/scripts/repin-publish.sh" >"$TMP/out" 2>"$TMP/err"
+}
+
+reset() { rm -rf "$FIX"; mkdir -p "$FIX"; }
+
+# --- an already-published release is left alone ------------------------------
+reset; fixture widget false "[$UP,$UP]"; manifest "$TMP/m.json" widget
+run_publish || die 'a published release made the run fail'
+[ ! -s "$CALLS" ] || die 'an already-published release was patched'
+grep -q '^published widget: v2.0.0' "$TMP/out" || die 'the published release was not reported'
+pass 'an already-published release is reported and never patched'
+
+# --- a pinned, complete draft is published exactly once -----------------------
+reset; fixture widget true "[$UP,$UP]"; manifest "$TMP/m.json" widget
+run_publish || die 'publishing a matching draft failed'
+[ "$(cat "$CALLS")" = 'PATCH repos/acme/widget/releases/900' ] \
+  || die "expected exactly one PATCH of release 900, got: $(cat "$CALLS")"
+grep -q '^published now widget: v2.0.0' "$TMP/out" || die 'the publish was not reported'
+pass 'a pinned draft whose card matches is published exactly once'
+
+# --- dry run never writes ----------------------------------------------------
+run_publish DRY_RUN=1 || die 'dry run failed'
+[ ! -s "$CALLS" ] || die 'dry run patched a release'
+grep -q 'would publish widget' "$TMP/out" || die 'dry run did not say what it would publish'
+pass 'DRY_RUN reports the publish without making it'
+
+# --- assets still uploading: wait, do not fail --------------------------------
+reset; fixture widget true "[$UP]"; manifest "$TMP/m.json" widget
+run_publish || die 'a draft mid-upload made the run fail'
+[ ! -s "$CALLS" ] || die 'a draft with fewer assets than the last release was published'
+grep -q 'assets are incomplete' "$TMP/out" || die 'the incomplete upload was not reported'
+pass 'a draft with fewer assets than the last release waits'
+
+reset; fixture widget true "[$UP,$UP,{\"name\":\"b\",\"state\":\"starter\"}]"; manifest "$TMP/m.json" widget
+run_publish || die 'a draft with an unfinished asset made the run fail'
+[ ! -s "$CALLS" ] || die 'a draft with an unfinished asset was published'
+pass 'a draft with an asset not yet uploaded waits'
+
+# --- disagreements and read failures never publish, and exit nonzero ----------
+reset; fixture widget true "[$UP,$UP]" behind "$OTHER_SHA"; manifest "$TMP/m.json" widget
+if run_publish; then die 'a tag on a different commit than the card was treated as success'; fi
+[ ! -s "$CALLS" ] || die 'a draft whose tag commit differs from the card was published'
+grep -q 'but the card pins' "$TMP/err" || die 'the commit disagreement was not named'
+pass 'a tag commit that differs from the card pin is refused'
+
+reset; fixture widget true "[$UP,$UP]"; manifest "$TMP/m.json" widget
+jq '.plugins[0].metadata.releaseTag = "v2.0.1"' "$TMP/m.json" > "$TMP/m2.json" && mv "$TMP/m2.json" "$TMP/m.json"
+if run_publish; then die 'a tag disagreement was treated as success'; fi
+[ ! -s "$CALLS" ] || die 'a draft tagged differently from the card was published'
+grep -q "but the card says 'v2.0.1'" "$TMP/err" || die 'the tag disagreement was not named'
+pass 'a release tagged differently from the card is refused'
+
+reset; fixture widget true "[$UP,$UP]"; manifest "$TMP/m.json" widget
+jq '.plugins[0].metadata.version = "2.0.1"' "$TMP/m.json" > "$TMP/m2.json" && mv "$TMP/m2.json" "$TMP/m.json"
+if run_publish; then die 'a version disagreement was treated as success'; fi
+[ ! -s "$CALLS" ] || die 'a draft whose version differs from the card was published'
+pass 'a card version that does not match the release tag is refused'
+
+reset; fixture widget true "[$UP,$UP]" diverged; manifest "$TMP/m.json" widget
+if run_publish; then die 'a tag off the default branch was treated as success'; fi
+[ ! -s "$CALLS" ] || die 'a draft off the default branch was published'
+pass 'a draft whose commit is not on the default branch is refused'
+
+reset; fixture widget true "[$UP,$UP]" FAIL; manifest "$TMP/m.json" widget
+if run_publish; then die 'a failed compare read was treated as success'; fi
+[ ! -s "$CALLS" ] || die 'a draft was published over a failed compare read'
+grep -q 'could not compare' "$TMP/err" || die 'the compare read failure was not named'
+pass 'a compare read failure exits nonzero without publishing'
+
+reset; fixture widget true "[$UP,$UP]"; rm "$FIX/widget/release.json"; manifest "$TMP/m.json" widget
+if run_publish; then die 'an unreadable release was treated as success'; fi
+grep -q 'could not read release 900' "$TMP/err" || die 'the release read failure was not named'
+pass 'an unreadable pinned release exits nonzero'
+
+# --- one plugin's failure does not block another's publish --------------------
+reset
+fixture widget true "[$UP,$UP]" FAIL
+fixture gadget true '[]'
+jq '.[0].assets = []' "$FIX/gadget/releases.json" > "$FIX/gadget/r.json" && mv "$FIX/gadget/r.json" "$FIX/gadget/releases.json"
+manifest "$TMP/m.json" widget gadget
+if run_publish; then die 'a run with one failing plugin exited zero'; fi
+[ "$(cat "$CALLS")" = 'PATCH repos/acme/gadget/releases/900' ] \
+  || die "the healthy plugin was not published past the failing one: $(cat "$CALLS")"
+pass 'a failing plugin still lets the next plugin publish, and the run exits nonzero'
+
+printf '%s repin publish checks passed\n' "$PASS"

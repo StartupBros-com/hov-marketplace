@@ -69,14 +69,20 @@ from pro-gate, generalized in hov-marketplace#118): `auto-release.yml`,
    whose CI runs are green, then stages a **draft** release titled
    `<plugin> vX.Y.Z` from the notes file (auto-notes with a warning if the
    file is missing or has no usable Highlights).
-4. `repin-reconcile` here sees the draft within the hour and opens the card
-   PR (version, tag, releaseId, sha). Merge it once both required checks
-   pass; the validator resolves the tag to the pinned commit. A PR that
-   changes only those pin fields takes no review round. A card PR that
-   also changes copy gets a normal review.
-5. Dispatch `Publish staged release` in the plugin repo with the tag. It
-   refuses until the live card names that exact release, then flips the
-   draft to published with `--latest`. The single publish event announces.
+4. `repin-reconcile` here sees the draft within the hour, opens the card
+   PR (version, tag, releaseId, sha), and requests auto-merge on it once
+   `scripts/repin-land.sh` proves the PR changes only the manifest and
+   carries exactly the reconciler's output. GitHub merges it when both
+   required checks pass; the validator resolves the tag to the pinned
+   commit. The same run closes repin PRs the new one superseded. A card PR
+   that also changes copy is a human PR and gets a normal review.
+5. The merge's push to `main` re-runs `repin-reconcile` (the hourly run
+   is the backstop), and `scripts/repin-publish.sh` publishes the draft the
+   card now pins and marks it latest. It re-checks tag, version, commit, default-branch
+   ancestry and that every asset finished uploading; while assets are still
+   uploading it waits for the next hourly run. The single publish event
+   announces. `Publish staged release` in the plugin repo still works by
+   hand and refuses until the live card names that exact release.
 6. Verify the `#tool-drops` message from the exact run log, not the
    workflow's conclusion (a not-listed skip also reports success):
 
@@ -128,11 +134,13 @@ agent-plugins.org schema has no such field), and results belong in
 whose `plugin.json` declares the agent-plugins.org schema: that schema sets
 `additionalProperties: false`.
 
-Two steps stay human on purpose: merging the card PR, because a standing
-credential that writes this manifest unattended is the one whose compromise
-reaches every installed client; and dispatching the publish, because it fires
-the outward announce and auto-dispatching a privileged publish from another
-repository is how release loops start.
+No step after the version-bump merge is human. The card still changes only
+through a PR on `main` that passes the required checks: the bot holds no
+bypass and pushes nothing to `main`, so a stolen bot key can open and queue a
+PR but cannot skip the validator. The publish is not a dispatch into another
+repository's workflow; it is a state check that flips one draft the merged
+card already names, so it cannot start a release loop. To hold a release back,
+delete or re-draft it before the card lands, or disable `repin-reconcile`.
 
 ### Release identity
 
@@ -149,8 +157,14 @@ shape). Adding a new plugin to the catalog means adding its repository to the
 App installation, to both secrets' repository lists, and to the `repositories:`
 list in this repo's `repin-reconcile.yml`.
 
-The card PR is opened by a second App, **StartupBros HOV Marketplace Bot**:
-contents and pull-request write on this repository only, never merge, secrets
+The release App is also what publishes the pinned draft from this repository's
+`repin-reconcile` run: its contents write on the plugin repository is enough to
+edit the release, and an App-made publish fires the release train where a
+`GITHUB_TOKEN` one would not.
+
+The card PR is opened, queued for auto-merge, and closed when superseded by a
+second App, **StartupBros HOV Marketplace Bot**: contents and pull-request
+write on this repository only, no ruleset bypass, secrets
 `HOV_MARKETPLACE_APP_ID` and `HOV_MARKETPLACE_APP_PRIVATE_KEY` visible to this
 repository only. Two facts force the split: GitHub shows another repository's
 draft releases only to push-capable identities, so the reconciler reads with a
@@ -158,14 +172,15 @@ release-App token; and this organization keeps GitHub's default that forbids
 `GITHUB_TOKEN` from creating pull requests, so the PR needs an App identity of
 its own (an App-opened PR also runs the validator without the approval gate a
 `GITHUB_TOKEN`-opened PR sits behind). Without the bot secrets the reconciler
-still pushes the repin branch and names the PR to open by hand.
+still pushes the repin branch and names the PR to open and merge by hand.
 
 Without either identity, `auto-release.yml` skips with a notice naming the tag
 to push, and the manual flow is unchanged: push `vX.Y.Z` at the merged main
 sha yourself, dispatch `release.yml` with the tag (or run `gh release create
 vX.Y.Z --draft --verify-tag --title "<plugin> vX.Y.Z" --notes-file
 docs/release-notes/vX.Y.Z.md`), wait for or merge the reconciler's card PR,
-then publish from your own identity with `gh release edit vX.Y.Z
+then, if the reconciler has not published it (it cannot see drafts without
+the release App), publish from your own identity with `gh release edit vX.Y.Z
 --draft=false --latest`; `publish-staged-release.yml` refuses without an
 identity for the reason above. Branch names must never be tag-shaped
 (`vX.Y.Z` as a branch collides with the tag in `actions/checkout` ref
