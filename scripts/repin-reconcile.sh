@@ -26,8 +26,9 @@ set -euo pipefail
 # in this repository. Reads are public release metadata. That inversion is the
 # point — writing this manifest from a plugin repo would need a standing
 # cross-repo credential, the one whose compromise reaches every installed client,
-# which is exactly why the repin was manual in the first place. Nothing here
-# merges: a human still reviews the PR, unchanged.
+# which is exactly why the repin was manual in the first place. This script only
+# edits the working tree; the workflow opens the PR, and scripts/repin-land.sh
+# queues it for auto-merge behind the same required checks a human merge needed.
 #
 # Usage:
 #   scripts/repin-reconcile.sh            # report drift, write PLAN_FILE
