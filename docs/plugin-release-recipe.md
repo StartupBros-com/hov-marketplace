@@ -80,7 +80,9 @@ from pro-gate, generalized in hov-marketplace#118): `auto-release.yml`,
    is the backstop), and `scripts/repin-publish.sh` publishes the draft the
    card now pins and marks it latest. It re-checks tag, version, commit, default-branch
    ancestry and that every asset finished uploading; while assets are still
-   uploading it waits for the next hourly run. The single publish event
+   uploading it waits for the next hourly run. Right before publishing it
+   re-reads the card from live `main` and skips a release `main` no longer
+   pins (a newer repin, or a revert holding it back). The single publish event
    announces. `Publish staged release` in the plugin repo still works by
    hand and refuses until the live card names that exact release.
 6. Verify the `#tool-drops` message from the exact run log, not the

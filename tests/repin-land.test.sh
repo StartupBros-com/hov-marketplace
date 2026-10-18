@@ -54,19 +54,23 @@ esac
 STUBGH
 chmod +x "$TMP/bin/gh"
 
-BOT='app/hov-bot'
+# The App's real slug, and the author shape `gh pr list --json author` returned for the
+# bot's repin PRs #205-#207: {"is_bot": true, "login": "app/<slug>"}.
+SLUG=startupbros-hov-marketplace-bot
+BOT="app/$SLUG"
 HEAD_SHA=cccccccccccccccccccccccccccccccccccccccc
 BLOB=dddddddddddddddddddddddddddddddddddddddd
 
 # One open PR per row: number, head branch, author, cross-repo, auto-merge already on.
 pr() { # $1 number $2 branch $3 author $4 cross $5 automerge(true|false)
   jq -n --argjson n "$1" --arg b "$2" --arg a "$3" --argjson x "$4" --argjson m "$5" --arg h "$HEAD_SHA" \
-    '{number: $n, headRefName: $b, headRefOid: $h, author: {login: $a}, isCrossRepository: $x,
-      autoMergeRequest: (if $m then {mergeMethod: "SQUASH"} else null end)}'
+    '{number: $n, headRefName: $b, headRefOid: $h,
+      author: {login: $a, is_bot: ($a | startswith("app/") or endswith("[bot]"))},
+      isCrossRepository: $x, autoMergeRequest: (if $m then {mergeMethod: "SQUASH"} else null end)}'
 }
 
-# The usual world: #10 is this run's PR, #9 an older bot repin, #8 a fork PR and #7 a
-# human PR that both happen to use a repin/auto- branch name.
+# The usual world: #10 is this run's PR, #9 an older bot repin, and #8 a fork PR, #7 a
+# human PR and #5 another App's PR that all happen to use a repin/auto- branch name.
 standard_prs() { # $1 = whether #10 already has auto-merge
   {
     pr 10 repin/auto-new "$BOT" false "$1"
@@ -74,6 +78,7 @@ standard_prs() { # $1 = whether #10 already has auto-merge
     pr 8 repin/auto-fork "$BOT" true false
     pr 7 repin/auto-human someone false false
     pr 6 feature/x "$BOT" false false
+    pr 5 repin/auto-otherapp app/other-bot false false
   } | jq -s . > "$FIX/prs.json"
 }
 
@@ -82,7 +87,7 @@ printf '%s\n' "$BLOB" > "$FIX/blob"
 
 run_land() { # extra env as arguments
   : > "$CALLS"
-  env PATH="$TMP/bin:$PATH" REPO=acme/market BOT_LOGIN="$BOT" "$@" \
+  env PATH="$TMP/bin:$PATH" REPO=acme/market BOT_SLUG="$SLUG" "$@" \
     bash "$ROOT/scripts/repin-land.sh" >"$TMP/out" 2>"$TMP/err"
 }
 
@@ -93,7 +98,14 @@ grep -qx "merge 10 $HEAD_SHA" "$CALLS" || die "auto-merge was not requested on #
 pass 'auto-merge is requested on the PR at the head that was checked'
 [ "$(grep '^close' "$CALLS")" = 'close 9' ] \
   || die "expected only #9 closed, got: $(grep '^close' "$CALLS" || true)"
-pass 'only the bot older same-repository repin PR is closed; fork, human and other PRs are untouched'
+pass 'only the bot older same-repository repin PR is closed; fork, human, other-App and other PRs are untouched'
+
+# --- the REST spelling of the same App account is the same author ---------------
+jq --arg a "${SLUG}[bot]" 'map(if .number == 10 then .author.login = $a else . end)' "$FIX/prs.json" \
+  > "$FIX/prs2.json" && mv "$FIX/prs2.json" "$FIX/prs.json"
+run_land DESIRED_BRANCH=repin/auto-new EXPECTED_BLOB="$BLOB" || die "a <slug>[bot] author was refused: $(cat "$TMP/err")"
+grep -qx "merge 10 $HEAD_SHA" "$CALLS" || die "auto-merge was not requested for a <slug>[bot] author: $(cat "$CALLS")"
+pass 'a PR whose author is spelled <slug>[bot] is the bot too'
 
 # --- idempotent: auto-merge already requested ---------------------------------
 standard_prs true
@@ -124,7 +136,9 @@ pass 'a cross-repository PR on the desired branch name is never landed'
 
 if run_land DESIRED_BRANCH=repin/auto-human EXPECTED_BLOB="$BLOB"; then die 'a human PR was landed'; fi
 [ ! -s "$CALLS" ] || die "a human PR triggered: $(cat "$CALLS")"
-pass 'a PR by anyone but the bot on the desired branch name is never landed'
+if run_land DESIRED_BRANCH=repin/auto-otherapp EXPECTED_BLOB="$BLOB"; then die 'another App PR was landed'; fi
+[ ! -s "$CALLS" ] || die "another App PR triggered: $(cat "$CALLS")"
+pass 'a PR by anyone but the bot, human or another App, on the desired branch name is never landed'
 
 # --- no drift: every bot repin PR is superseded by main ------------------------
 standard_prs false

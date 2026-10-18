@@ -25,23 +25,56 @@ set -euo pipefail
 #   scripts/repin-publish.sh            # publish matching drafts
 #   DRY_RUN=1 scripts/repin-publish.sh  # report only
 #
+# MANIFEST is this run's snapshot. Right before each publish the card is re-read
+# from live main: a newer repin, or a revert that holds a release back, may have
+# landed since the run started, and a publish cannot be taken back.
+#
 # Env:
-#   MANIFEST     path to marketplace.json (default: .claude-plugin/marketplace.json)
-#   ONLY_PLUGIN  restrict to one plugin name
-#   GH_TOKEN     must see the plugin repositories' drafts (push-capable)
+#   MANIFEST           path to marketplace.json (default: .claude-plugin/marketplace.json)
+#   MARKETPLACE_REPO   owner/name holding the live manifest (default: $GITHUB_REPOSITORY)
+#   MARKETPLACE_REF    branch the live manifest is read from (default: main)
+#   MARKETPLACE_TOKEN  token for that read (default: GH_TOKEN)
+#   ONLY_PLUGIN        restrict to one plugin name
+#   GH_TOKEN           must see the plugin repositories' drafts (push-capable)
 #
 # Exit codes:
-#   0  every pinned release is published, was published now, or is still uploading
+#   0  every pinned release is published, was published now, is still uploading,
+#      or is no longer pinned on live main
 #   1  a read failure or a card/release disagreement on at least one plugin;
 #      the other plugins are still processed
 
 warn() { printf 'error: %s\n' "$*" >&2; }
 
 MANIFEST="${MANIFEST:-.claude-plugin/marketplace.json}"
+MARKETPLACE_REPO="${MARKETPLACE_REPO:-${GITHUB_REPOSITORY:-}}"
+MARKETPLACE_REF="${MARKETPLACE_REF:-main}"
+MARKETPLACE_TOKEN="${MARKETPLACE_TOKEN:-}"
 DRY_RUN="${DRY_RUN:-0}"
 ONLY_PLUGIN="${ONLY_PLUGIN:-}"
 
 [ -s "$MANIFEST" ] || { warn "manifest not found: $MANIFEST"; exit 1; }
+[ -n "$MARKETPLACE_REPO" ] || { warn 'MARKETPLACE_REPO is not set'; exit 1; }
+
+# The pin fields a publish depends on, as one comparable line. Empty input (no
+# such card) yields an empty line, which never equals a real card's.
+pin_tuple() {
+  jq -r '[.source.url, .source.sha, .metadata.version, .metadata.releaseTag,
+          (.metadata.releaseId | tostring)] | join("\t")'
+}
+
+live_card() {
+  local name="$1" live
+  if [ -n "$MARKETPLACE_TOKEN" ]; then
+    live="$(GH_TOKEN="$MARKETPLACE_TOKEN" gh api -H 'Accept: application/vnd.github.raw' \
+      "repos/$MARKETPLACE_REPO/contents/.claude-plugin/marketplace.json?ref=$MARKETPLACE_REF" 2>/dev/null)" || return 1
+  else
+    live="$(gh api -H 'Accept: application/vnd.github.raw' \
+      "repos/$MARKETPLACE_REPO/contents/.claude-plugin/marketplace.json?ref=$MARKETPLACE_REF" 2>/dev/null)" || return 1
+  fi
+  jq -c --arg n "$name" '
+      [ .plugins[] | select(type == "object" and .name == $n) ]
+      | if length == 1 then .[0] else empty end' <<<"$live"
+}
 
 # Same rule as repin-reconcile.sh: anything but a github.com https url is refused.
 repo_from_url() {
@@ -63,7 +96,7 @@ repo_from_url() {
 publish_card() {
   local name="$1" card url repo card_version card_tag card_id card_sha
   local rel tag is_draft is_pre sha obj_type default_branch compare_status
-  local pending have_assets prev_assets
+  local pending have_assets prev_assets live
 
   card="$(jq -ce --arg n "$name" '
       [ .plugins[] | select(type == "object" and .name == $n) ] as $c
@@ -132,6 +165,14 @@ publish_card() {
   if [ "$pending" -ne 0 ] || [ "$have_assets" -lt "$prev_assets" ]; then
     printf '::notice::%s %s is pinned but its assets are incomplete (%s uploaded, %s pending, previous release had %s); not publishing yet\n' \
       "$name" "$tag" "$have_assets" "$pending" "$prev_assets"
+    return 0
+  fi
+
+  live="$(live_card "$name")" \
+    || { warn "could not read the live manifest of $MARKETPLACE_REPO at $MARKETPLACE_REF"; return 1; }
+  if [ "$(pin_tuple <<<"$live")" != "$(pin_tuple <<<"$card")" ]; then
+    printf 'skip %s: %s no longer pins %s (releaseId %s); not publishing\n' \
+      "$name" "$MARKETPLACE_REF" "$tag" "$card_id"
     return 0
   fi
 

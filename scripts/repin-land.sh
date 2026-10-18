@@ -22,7 +22,7 @@ set -euo pipefail
 #
 # Env:
 #   REPO            owner/name of this repository (default: $GITHUB_REPOSITORY)
-#   BOT_LOGIN       gh's author login of the marketplace bot, e.g. app/<slug>
+#   BOT_SLUG        the marketplace bot App's slug (create-github-app-token's app-slug)
 #   DESIRED_BRANCH  head branch of this run's repin PR; empty when there is no drift
 #   EXPECTED_BLOB   git blob sha of the reconciler's manifest (needed with DESIRED_BRANCH)
 #   ONLY_PLUGIN     set for a targeted run: its PR covers one plugin, so nothing is closed
@@ -36,22 +36,24 @@ fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
 MANIFEST_PATH='.claude-plugin/marketplace.json'
 REPO="${REPO:-${GITHUB_REPOSITORY:-}}"
-BOT_LOGIN="${BOT_LOGIN:-}"
+BOT_SLUG="${BOT_SLUG:-}"
 DESIRED_BRANCH="${DESIRED_BRANCH:-}"
 EXPECTED_BLOB="${EXPECTED_BLOB:-}"
 ONLY_PLUGIN="${ONLY_PLUGIN:-}"
 
 [ -n "$REPO" ] || fail 'REPO is not set'
-[ -n "$BOT_LOGIN" ] || fail 'BOT_LOGIN is not set'
+[ -n "$BOT_SLUG" ] || fail 'BOT_SLUG is not set'
 
 # Open repin PRs the bot opened from this repository. Same-named branches on a fork
-# or PRs by anyone else are not ours to merge or close.
+# or PRs by anyone else are not ours to merge or close. gh reports an App author as
+# app/<slug> (observed on #205-#207); the REST spelling <slug>[bot] is accepted too,
+# since both name the same App account.
 open_prs="$(gh pr list --repo "$REPO" --state open --limit 100 \
     --json number,headRefName,headRefOid,author,isCrossRepository,autoMergeRequest 2>/dev/null)" \
   || fail "could not list open pull requests in $REPO"
-repins="$(jq -c --arg bot "$BOT_LOGIN" '
+repins="$(jq -c --arg slug "$BOT_SLUG" '
     [ .[] | select((.headRefName | startswith("repin/auto-"))
-                   and .author.login == $bot
+                   and (.author.login == "app/\($slug)" or .author.login == "\($slug)[bot]")
                    and .isCrossRepository == false) ]' <<<"$open_prs")" \
   || fail "could not parse the open pull requests of $REPO"
 
@@ -59,7 +61,7 @@ desired_pr=''
 if [ -n "$DESIRED_BRANCH" ]; then
   [ -n "$EXPECTED_BLOB" ] || fail 'EXPECTED_BLOB is required with DESIRED_BRANCH'
   pr="$(jq -c --arg b "$DESIRED_BRANCH" '[ .[] | select(.headRefName == $b) ] | first // empty' <<<"$repins")"
-  [ -n "$pr" ] || fail "no open repin PR by $BOT_LOGIN for $DESIRED_BRANCH"
+  [ -n "$pr" ] || fail "no open repin PR by app/$BOT_SLUG for $DESIRED_BRANCH"
   desired_pr="$(jq -r '.number' <<<"$pr")"
   head="$(jq -r '.headRefOid' <<<"$pr")"
 

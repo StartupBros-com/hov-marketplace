@@ -23,6 +23,9 @@ export FIX="$TMP/fix" CALLS="$TMP/calls"
 # Stub gh api: serves each fake repository acme/<name> from $FIX/<name>/ and
 # records every PATCH in $CALLS. It honours --jq, because the script relies on gh
 # applying that filter; a stub that ignored it would test a shape production never sees.
+# The live marketplace manifest (acme/market) is $FIX/live.json, raw as the
+# Accept: raw read returns it; a file holding FAIL makes that read fail. Each live
+# read records the token it used in $FIX/live-tokens.
 cat > "$TMP/bin/gh" <<'STUBGH'
 #!/usr/bin/env bash
 set -e
@@ -33,11 +36,17 @@ while [ $# -gt 0 ]; do
   case "$1" in
     -X) method="$2"; shift 2 ;;
     --jq) jqexpr="$2"; shift 2 ;;
-    -F|-f) shift 2 ;;
+    -F|-f|-H) shift 2 ;;
     *) path="$1"; shift ;;
   esac
 done
 emit() { if [ -n "$jqexpr" ]; then jq -r "$jqexpr"; else cat; fi; }
+case "$path" in
+  'repos/acme/market/contents/.claude-plugin/marketplace.json?ref=main')
+    printf '%s\n' "${GH_TOKEN:-}" >> "$FIX/live-tokens"
+    if [ "$(cat "$FIX/live.json")" = FAIL ]; then printf '{"message":"Server Error"}\n' >&2; exit 1; fi
+    emit < "$FIX/live.json"; exit 0 ;;
+esac
 repo="${path#repos/acme/}"; name="${repo%%/*}"; rest="${repo#"$name"}"
 dir="$FIX/$name"
 [ -d "$dir" ] || { printf '{"message":"Not Found"}\n' >&2; exit 1; }
@@ -86,9 +95,11 @@ manifest() {
       metadata: {version: "2.0.0", releaseId: 900, releaseTag: "v2.0.0"}})}' > "$dest"
 }
 
+# Live main matches this run's snapshot unless a case wrote its own live.json first.
 run_publish() { # extra env as arguments
   : > "$CALLS"
-  env PATH="$TMP/bin:$PATH" MANIFEST="$TMP/m.json" "$@" \
+  [ -e "$FIX/live.json" ] || cp "$TMP/m.json" "$FIX/live.json"
+  env PATH="$TMP/bin:$PATH" MANIFEST="$TMP/m.json" MARKETPLACE_REPO=acme/market "$@" \
     bash "$ROOT/scripts/repin-publish.sh" >"$TMP/out" 2>"$TMP/err"
 }
 
@@ -103,11 +114,14 @@ pass 'an already-published release is reported and never patched'
 
 # --- a pinned, complete draft is published exactly once -----------------------
 reset; fixture widget true "[$UP,$UP]"; manifest "$TMP/m.json" widget
-run_publish || die 'publishing a matching draft failed'
+run_publish GH_TOKEN=app-token MARKETPLACE_TOKEN=job-token || die 'publishing a matching draft failed'
 [ "$(cat "$CALLS")" = 'PATCH repos/acme/widget/releases/900' ] \
   || die "expected exactly one PATCH of release 900, got: $(cat "$CALLS")"
 grep -q '^published now widget: v2.0.0' "$TMP/out" || die 'the publish was not reported'
 pass 'a pinned draft whose card matches is published exactly once'
+[ "$(cat "$FIX/live-tokens")" = job-token ] \
+  || die "live main was not read with MARKETPLACE_TOKEN: $(cat "$FIX/live-tokens")"
+pass 'live main is read with MARKETPLACE_TOKEN, not the plugin-repositories token'
 
 # --- dry run never writes ----------------------------------------------------
 run_publish DRY_RUN=1 || die 'dry run failed'
@@ -162,6 +176,28 @@ reset; fixture widget true "[$UP,$UP]"; rm "$FIX/widget/release.json"; manifest 
 if run_publish; then die 'an unreadable release was treated as success'; fi
 grep -q 'could not read release 900' "$TMP/err" || die 'the release read failure was not named'
 pass 'an unreadable pinned release exits nonzero'
+
+# --- live main moved on since the snapshot: never publish the old pin ---------
+# A newer repin (or a revert holding the release back) merged after this run read main.
+reset; fixture widget true "[$UP,$UP]"; manifest "$TMP/m.json" widget
+jq '.plugins[0].metadata.releaseId = 901' "$TMP/m.json" > "$FIX/live.json"
+run_publish || die 'a live pin that moved on made the run fail'
+[ ! -s "$CALLS" ] || die 'a draft live main no longer pins was published'
+grep -q '^skip widget: main no longer pins v2.0.0' "$TMP/out" || die 'the moved pin was not reported'
+pass 'a draft that live main no longer pins is not published'
+
+reset; fixture widget true "[$UP,$UP]"; manifest "$TMP/m.json" widget
+jq '.plugins = []' "$TMP/m.json" > "$FIX/live.json"
+run_publish || die 'a card missing from live main made the run fail'
+[ ! -s "$CALLS" ] || die 'a draft whose card is gone from live main was published'
+pass 'a draft whose card is gone from live main is not published'
+
+reset; fixture widget true "[$UP,$UP]"; manifest "$TMP/m.json" widget
+printf 'FAIL\n' > "$FIX/live.json"
+if run_publish; then die 'a failed live-main read was treated as success'; fi
+[ ! -s "$CALLS" ] || die 'a draft was published over a failed live-main read'
+grep -q 'could not read the live manifest' "$TMP/err" || die 'the live read failure was not named'
+pass 'a live-main read failure exits nonzero without publishing'
 
 # --- one plugin's failure does not block another's publish --------------------
 reset

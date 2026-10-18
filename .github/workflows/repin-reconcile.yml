@@ -202,7 +202,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           REPO: ${{ github.repository }}
-          BOT_LOGIN: app/${{ steps.bot.outputs.app-slug }}
+          BOT_SLUG: ${{ steps.bot.outputs.app-slug }}
           DESIRED_BRANCH: ${{ steps.reconcile.outputs.drift == 'true' && format('repin/auto-{0}', steps.reconcile.outputs.key) || '' }}
           EXPECTED_BLOB: ${{ steps.reconcile.outputs.blob }}
           ONLY_PLUGIN: ${{ inputs.only_plugin }}
@@ -210,11 +210,14 @@ jobs:
 
       # Runs even when an earlier step failed: publishing a draft main already pins
       # does not depend on this run's repin. It reads the manifest at the commit
-      # this run checked out, not the working tree the reconcile step rewrote.
+      # this run checked out, not the working tree the reconcile step rewrote, and
+      # re-reads live main with this job's token right before each publish.
       - name: Publish staged releases the card on main already pins
         if: ${{ !cancelled() && steps.app.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
+          MARKETPLACE_REPO: ${{ github.repository }}
+          MARKETPLACE_TOKEN: ${{ github.token }}
           ONLY_PLUGIN: ${{ inputs.only_plugin }}
           MANIFEST: ${{ runner.temp }}/main-manifest.json
         run: |
