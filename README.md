@@ -14,6 +14,7 @@ Claude Code tools for builders. Add the marketplace over HTTPS once, then instal
 /plugin install rent-check@hov
 /plugin install papercut@hov
 /plugin install sign-it@hov
+/plugin install harness-optimizer@hov
 ```
 
 Third-party marketplace updates are off by default. Open `/plugin`, select **Marketplaces**, choose `hov`, and select **Enable auto-update**. Updates are applied at the start of a Claude Code session.
@@ -61,6 +62,20 @@ Vet a third-party Claude Code skill before you install it. `/harness-vet` reads 
 ## rent-check
 
 Your always-on context has to pay rent. `/rent-check` audits what CLAUDE.md and always-on skills actually cost per prompt, measures which rules earn their tokens from real transcripts, and proposes demotions for the ones that do not.
+
+## harness-optimizer
+
+Run `/harness-optimizer:harness-optimizer` to investigate recurring problems in your
+Claude Code setup. It assigns separate investigators across six evidence lanes,
+then selects up to three repair families and has independent agents challenge the
+diagnosis, proposed changes and reported outcome. Missing evidence, blocked work
+and required approvals stay visible.
+
+It runs only when you invoke it, uses your existing permissions, and does not
+install optional specialists or schedule maintenance. Investigation and review
+consume model tokens; the attempt limits are not a hard spending cap. Other
+runtimes and live specialist interoperability remain unverified. See
+[Harness Optimizer](https://github.com/StartupBros-com/harness-optimizer).
 
 ## Evaluating a plugin with `claude plugin eval`
 

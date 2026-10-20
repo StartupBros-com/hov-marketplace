@@ -75,6 +75,7 @@ make_plugin() {
 
 TOKEN_SHA="$(make_plugin token-eater 1.2.3 v1.2.3)"
 PRO_SHA="$(make_plugin pro-gate 2.0.0 v2.0.0)"
+OPTIMIZER_SHA="$(make_plugin harness-optimizer 0.2.0 v0.2.0)"
 
 write_manifest() {
   local token_sha="$1" pro_sha="$2" token_id="$3" token_name="${4:-token-eater}" token_version="${5:-1.2.3}" token_tag="${6:-v1.2.3}"
@@ -99,6 +100,13 @@ validate() {
 write_manifest "$TOKEN_SHA" "$PRO_SHA" 10
 expect_pass "valid syntax" validate syntax
 expect_pass "valid full fixture and U7 expectations" env EXPECTED_PLUGIN_NAME=token-eater EXPECTED_PLUGIN_VERSION=1.2.3 EXPECTED_RELEASE_ID=10 EXPECTED_RELEASE_TAG=v1.2.3 EXPECTED_SHA="$TOKEN_SHA" EXPECTED_PAYLOAD_PATHS=.claude-plugin/plugin.json,skills/token-eater/SKILL.md bash -c 'cd "$1" && MARKETPLACE_TEST_REMOTE_ROOT="$2" ALLOW_LOCAL_FILE_REMOTES=1 "$3" full' _ "$WORK" "$REMOTE_ROOT" "$VALIDATOR"
+
+jq --arg sha "$OPTIMIZER_SHA" '.plugins += [{name: "harness-optimizer", source: {source: "url", url: "https://github.com/StartupBros-com/harness-optimizer.git", sha: $sha}, description: "Evidence-backed harness repairs.", metadata: {version: "0.2.0", releaseId: 30, releaseTag: "v0.2.0"}}]' "$WORK/.claude-plugin/marketplace.json" >"$TMP/optimizer.json"
+mv "$TMP/optimizer.json" "$WORK/.claude-plugin/marketplace.json"
+expect_pass "harness-optimizer approved source passes full validation" validate full
+jq '(.plugins[] | select(.name == "harness-optimizer") | .source.url) = "https://github.com/attacker/harness-optimizer.git"' "$WORK/.claude-plugin/marketplace.json" >"$TMP/optimizer-wrong-source.json"
+mv "$TMP/optimizer-wrong-source.json" "$WORK/.claude-plugin/marketplace.json"
+expect_fail "harness-optimizer cannot change repository owner" validate syntax
 
 # Announcement-contract failures are pinned-tree defects. Omit release metadata
 # on these fixtures so the failure is the contract itself, never tag resolution.
