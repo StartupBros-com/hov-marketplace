@@ -369,27 +369,28 @@ verify_release() {
   printf '%s\n' "$version"
 }
 
-marketplace_lists_release() {
-  require MARKETPLACE_MANIFEST
+# Both gates bind all five identity fields on the same manifest entry. Keep the
+# card requirement inside that predicate: a card on another release cannot count.
+marketplace_matches_release() {
+  local require_card="$1"
   jq -e \
     --arg name "$REPOSITORY" \
     --arg sha "$SOURCE_SHA" \
     --arg version "$RELEASE_VERSION" \
     --argjson release_id "$RELEASE_ID" \
     --arg release_tag "$RELEASE_TAG" \
-    'any(.plugins[]; .name == $name and .source.sha == $sha and .metadata.version == $version and .metadata.releaseId == $release_id and .metadata.releaseTag == $release_tag)' \
+    --argjson require_card "$require_card" \
+    'any(.plugins[]; .name == $name and .source.sha == $sha and .metadata.version == $version and .metadata.releaseId == $release_id and .metadata.releaseTag == $release_tag and ($require_card == false or (.card | type == "object")))' \
     "$MARKETPLACE_MANIFEST" >/dev/null
 }
 
+marketplace_lists_release() {
+  require MARKETPLACE_MANIFEST
+  marketplace_matches_release false
+}
+
 marketplace_has_card() {
-  jq -e \
-    --arg name "$REPOSITORY" \
-    --arg sha "$SOURCE_SHA" \
-    --arg version "$RELEASE_VERSION" \
-    --argjson release_id "$RELEASE_ID" \
-    --arg release_tag "$RELEASE_TAG" \
-    'any(.plugins[]; .name == $name and .source.sha == $sha and .metadata.version == $version and .metadata.releaseId == $release_id and .metadata.releaseTag == $release_tag and (.card | type == "object"))' \
-    "$MARKETPLACE_MANIFEST" >/dev/null
+  marketplace_matches_release true
 }
 
 # Report a release that finished WITHOUT posting a drop card. Deliberately

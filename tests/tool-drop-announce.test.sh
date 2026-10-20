@@ -527,6 +527,63 @@ jq -n \
   '{plugins: [{name: $name, source: {sha: $sha}, metadata: {version: $version, releaseId: $release_id, releaseTag: $tag}, card: {rows: ["one", "two", "three"], run: "Run it"}}]}' \
   >"$MANIFEST"
 
+# Characterize both pure predicates directly, including their raw jq failures.
+# Sourcing does not call main; any accidental network call is refused here.
+expect_identity_predicates() {
+  local label="$1" manifest="$2" listed="$3" card="$4" predicate expected actual
+  for predicate in marketplace_lists_release marketplace_has_card; do
+    expected="$listed"
+    [[ "$predicate" != marketplace_has_card ]] || expected="$card"
+    actual=0
+    REPOSITORY="$FIXTURE_REPOSITORY" SOURCE_SHA="$SOURCE_SHA" \
+      RELEASE_VERSION="$FIXTURE_VERSION" RELEASE_ID="$FIXTURE_RELEASE_ID" \
+      RELEASE_TAG="$FIXTURE_TAG" MARKETPLACE_MANIFEST="$manifest" \
+      bash -c '
+        source "$1"
+        curl() { printf "unexpected network call\\n" >&2; return 99; }
+        gh() { printf "unexpected network call\\n" >&2; return 99; }
+        "$2"
+      ' _ "$HELPER" "$predicate" >"$TMP/identity-out" 2>"$TMP/identity-err" || actual=$?
+    [[ "$actual" == "$expected" ]] || die "$label $predicate: expected $expected, got $actual"
+    [[ ! -s "$TMP/identity-out" ]] || die "$label $predicate leaked stdout"
+    if ((expected > 1)); then
+      [[ -s "$TMP/identity-err" ]] || die "$label $predicate hid jq failure"
+    else
+      [[ ! -s "$TMP/identity-err" ]] || die "$label $predicate unexpected stderr"
+    fi
+  done
+  pass "$label preserves both identity predicates"
+}
+
+expect_identity_predicates "matching release and card" "$MANIFEST" 0 0
+for field in '.name' '.source.sha' '.metadata.version' '.metadata.releaseId' '.metadata.releaseTag'; do
+  jq "(.plugins[0]$field) = null" "$MANIFEST" >"$TMP/identity-case.json"
+  expect_identity_predicates "mismatched $field" "$TMP/identity-case.json" 1 1
+done
+for value in null false 7 '"text"' '[]'; do
+  jq --argjson value "$value" '.plugins[0].card = $value' "$MANIFEST" >"$TMP/identity-case.json"
+  expect_identity_predicates "non-object card $value" "$TMP/identity-case.json" 0 1
+done
+jq 'del(.plugins[0].card)' "$MANIFEST" >"$TMP/identity-case.json"
+expect_identity_predicates "missing card" "$TMP/identity-case.json" 0 1
+jq '.plugins[0].card = {}' "$MANIFEST" >"$TMP/identity-case.json"
+expect_identity_predicates "empty object card" "$TMP/identity-case.json" 0 0
+jq '.plugins += [.plugins[0]] | del(.plugins[0].card)' "$MANIFEST" >"$TMP/identity-case.json"
+expect_identity_predicates "second matching entry has card" "$TMP/identity-case.json" 0 0
+jq '.plugins += [.plugins[0]] | del(.plugins[1].card)' "$MANIFEST" >"$TMP/identity-case.json"
+expect_identity_predicates "first matching entry has card" "$TMP/identity-case.json" 0 0
+jq '.plugins += [.plugins[0]] | del(.plugins[].card)' "$MANIFEST" >"$TMP/identity-case.json"
+expect_identity_predicates "duplicate matching entries without cards" "$TMP/identity-case.json" 0 1
+jq '.plugins += [(.plugins[0] | .source.sha = "other")] | del(.plugins[0].card)' "$MANIFEST" >"$TMP/identity-case.json"
+expect_identity_predicates "card belongs to different release" "$TMP/identity-case.json" 0 1
+printf '{"plugins":[]}\n' >"$TMP/identity-case.json"
+expect_identity_predicates "empty plugin array" "$TMP/identity-case.json" 1 1
+printf '{"plugins":null}\n' >"$TMP/identity-case.json"
+expect_identity_predicates "invalid plugin array" "$TMP/identity-case.json" 5 5
+printf '{\n' >"$TMP/identity-case.json"
+expect_identity_predicates "malformed manifest" "$TMP/identity-case.json" 5 5
+expect_identity_predicates "unreadable manifest" "$TMP/no-such-manifest.json" 2 2
+
 cat >"$FAKE_BIN/curl" <<'FAKE_CURL'
 #!/usr/bin/env bash
 set -euo pipefail
