@@ -7,6 +7,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 WORKFLOW="$ROOT/.github/workflows/hov-tool-drop-announce.yml"
 HELPER="$ROOT/release/scripts/tool-drop-announce.sh"
+GUARD="$ROOT/release/scripts/latest-stable-release.sh"
 FIXED_ENDPOINT='https://members.startupbros.com/api/internal/ops/tool-releases'
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -32,7 +33,7 @@ for command_name in git jq python3 sha256sum yq; do
 done
 
 check_contract() {
-  local workflow="$1" helper="$2"
+  local workflow="$1" helper="$2" guard="${3:-$GUARD}"
   local input_count secret_count fixed_count disable_count
   local current_index release_index ancestry_index trusted_index manifest_index stable_index announce_index
   local release_ref trusted_repository trusted_ref trusted_path trusted_credentials
@@ -45,7 +46,23 @@ check_contract() {
 
   input_count="$(yq -r '.on.workflow_call.inputs // {} | length' "$workflow")" || return 1
   secret_count="$(yq -r '.on.workflow_call.secrets // {} | length' "$workflow")" || return 1
-  [[ "$input_count" == 0 && "$secret_count" == 0 ]] || return 1
+  [[ "$input_count" == 1 && "$secret_count" == 0 ]] || return 1
+  # The one input names the manifest repository. An old-shape caller passes
+  # nothing and the manifest checkout falls back to the workflow's home
+  # repository; that fallback is a static pin on the expression below, which
+  # GitHub evaluates, not this test.
+  [[ "$(yq -r '.on.workflow_call.inputs | keys | .[0]' "$workflow")" == marketplace-repository ]] || return 1
+  [[ "$(yq -r '.on.workflow_call.inputs."marketplace-repository".type' "$workflow")" == string ]] || return 1
+  [[ "$(yq -r '.on.workflow_call.inputs."marketplace-repository".required' "$workflow")" == false ]] || return 1
+  [[ "$(yq -r '.on.workflow_call.inputs."marketplace-repository" | has("default")' "$workflow")" == false ]] || return 1
+  ! grep -Fq 'StartupBros-com/' "$workflow" || return 1
+  # Latest is judged per tag family by the trusted guard, never by the
+  # repository-wide latest release, anywhere in the workflow or the guard.
+  ! grep -Fq 'releases/latest' "$workflow" "$guard" || return 1
+  grep -Fq -- 'gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100"' "$guard" || return 1
+  grep -Fq 'sort_by(.version)' "$guard" || return 1
+  ! grep -Eq 'sort_by\(\.(created_at|published_at)\)|fromdateiso8601' "$guard" || return 1
+  grep -Fq 'hov-drop-announce: status=not-announced reason=not-latest repository=%s tag=%s plugin=%s' "$guard" || return 1
   ! grep -Eq 'announce-url|x-tool-release-announce-secret' "$workflow" "$helper" || return 1
   ! grep -Fq 'ANNOUNCE_URL' "$workflow" || return 1
   ! grep -Fq 'ANNOUNCE_SECRET' "$workflow" || return 1
@@ -99,7 +116,7 @@ check_contract() {
   manifest_ref="$(yq -r '.jobs.announce.steps[] | select(.name == "Check out current marketplace manifest") | .with.ref' "$workflow")" || return 1
   manifest_path="$(yq -r '.jobs.announce.steps[] | select(.name == "Check out current marketplace manifest") | .with.path' "$workflow")" || return 1
   manifest_credentials="$(yq -r '.jobs.announce.steps[] | select(.name == "Check out current marketplace manifest") | .with.persist-credentials' "$workflow")" || return 1
-  [[ "$manifest_repository" == StartupBros-com/hov-marketplace && "$manifest_ref" == main ]] || return 1
+  [[ "$manifest_repository" == '${{ inputs.marketplace-repository || job.workflow_repository }}' && "$manifest_ref" == main ]] || return 1
   [[ -n "$manifest_path" && "$manifest_path" != "$trusted_path" && "$manifest_credentials" == false ]] || return 1
 
   current_release_file='${{ runner.temp }}/hov-tool-drop-current-release.json'
@@ -119,10 +136,14 @@ check_contract() {
   [[ "$current_run" != *'releases/latest'* && "$current_run" != *'${{'* ]] || return 1
 
   stable_env_count="$(yq -r '.jobs.announce.steps[] | select(.name == "Resolve latest stable release") | .env | length' "$workflow")" || return 1
-  [[ "$stable_env_count" == 1 ]] || return 1
+  [[ "$stable_env_count" == 4 ]] || return 1
   [[ "$(yq -r '.jobs.announce.steps[] | select(.name == "Resolve latest stable release") | .env.GH_TOKEN' "$workflow")" == '${{ github.token }}' ]] || return 1
+  [[ "$(yq -r '.jobs.announce.steps[] | select(.name == "Resolve latest stable release") | .env.REPOSITORY' "$workflow")" == '${{ github.event.repository.name }}' ]] || return 1
+  [[ "$(yq -r '.jobs.announce.steps[] | select(.name == "Resolve latest stable release") | .env.RELEASE_ID' "$workflow")" == '${{ github.event.release.id }}' ]] || return 1
+  [[ "$(yq -r '.jobs.announce.steps[] | select(.name == "Resolve latest stable release") | .env.RELEASE_TAG' "$workflow")" == '${{ github.event.release.tag_name }}' ]] || return 1
+  [[ "$(yq -r '.jobs.announce.steps[] | select(.name == "Resolve latest stable release") | .id' "$workflow")" == stable ]] || return 1
   stable_run="$(yq -r '.jobs.announce.steps[] | select(.name == "Resolve latest stable release") | .run' "$workflow")" || return 1
-  expected_stable=$'latest_id="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .id)"\ntest -n "$latest_id"\necho "id=$latest_id" >> "$GITHUB_OUTPUT"'
+  expected_stable="./$trusted_path/release/scripts/latest-stable-release.sh"
   [[ "$stable_run" == "$expected_stable" && "$stable_run" != *'${{'* ]] || return 1
 
   announce_run="$(yq -r '.jobs.announce.steps[] | select(.name == "Announce release") | .run' "$workflow")" || return 1
@@ -276,6 +297,27 @@ Path(destination).write_text(text.replace(old, new, 1))
 PY
 }
 
+swap_once() {
+  local source="$1" destination="$2" first="$3" second="$4"
+  python3 - "$source" "$destination" "$first" "$second" <<'PY'
+from pathlib import Path
+import sys
+
+source, destination, first, second = sys.argv[1:]
+text = Path(source).read_text()
+for needle in (first, second):
+    count = text.count(needle)
+    if count != 1:
+        raise SystemExit(f"expected one swap target, found {count}: {needle!r}")
+start, end = text.index(first), text.index(second)
+if start >= end:
+    raise SystemExit("first swap target must precede the second")
+Path(destination).write_text(
+    text[:start] + second + text[start + len(first):end] + first + text[end + len(second):]
+)
+PY
+}
+
 expect_contract_reject() {
   local label="$1" workflow="$2" helper="$3"
   if check_contract "$workflow" "$helper" >/dev/null 2>&1; then
@@ -288,8 +330,23 @@ check_contract "$WORKFLOW" "$HELPER" || die "trusted workflow/helper static cont
 pass "trusted workflow/helper static contract"
 
 mutant="$TMP/workflow-input.yml"
-replace_once "$WORKFLOW" "$mutant" $'  workflow_call:\n' $'  workflow_call:\n    inputs:\n      announce-url:\n        type: string\n        required: false\n'
+replace_once "$WORKFLOW" "$mutant" $'    inputs:\n      marketplace-repository:\n' $'    inputs:\n      announce-url:\n        type: string\n        required: false\n      marketplace-repository:\n'
 expect_contract_reject "caller URL input" "$mutant" "$HELPER"
+
+mutant="$TMP/workflow-second-input.yml"
+replace_once "$WORKFLOW" "$mutant" $'        type: string\n        required: false\n\npermissions: {}\n' \
+  $'        type: string\n        required: false\n      marketplace-ref:\n        type: string\n        required: false\n\npermissions: {}\n'
+expect_contract_reject "second workflow input" "$mutant" "$HELPER"
+
+mutant="$TMP/workflow-required-input.yml"
+replace_once "$WORKFLOW" "$mutant" $'        type: string\n        required: false\n\npermissions: {}\n' \
+  $'        type: string\n        required: true\n\npermissions: {}\n'
+expect_contract_reject "manifest repository input made required" "$mutant" "$HELPER"
+
+mutant="$TMP/workflow-input-caller-default.yml"
+replace_once "$WORKFLOW" "$mutant" $'        type: string\n        required: false\n\npermissions: {}\n' \
+  $'        type: string\n        required: false\n        default: ${{ github.repository }}\n\npermissions: {}\n'
+expect_contract_reject "manifest repository input defaulting to the caller" "$mutant" "$HELPER"
 
 mutant="$TMP/workflow-no-concurrency-cancel.yml"
 replace_once "$WORKFLOW" "$mutant" $'      cancel-in-progress: true\n' ''
@@ -337,8 +394,8 @@ expect_contract_reject "latest stable lookup before eligibility" "$mutant" "$HEL
 
 mutant="$TMP/workflow-stale-event-body.yml"
 replace_once "$WORKFLOW" "$mutant" \
-  $'          REPOSITORY: ${{ github.event.repository.name }}\n          RELEASE_ID: ${{ github.event.release.id }}\n' \
-  $'          REPOSITORY: ${{ github.event.repository.name }}\n          RELEASE_ID: ${{ github.event.release.id }}\n          RELEASE_NOTES: ${{ github.event.release.body }}\n'
+  $'          EVENT_ACTION: ${{ github.event.action }}\n          REPOSITORY: ${{ github.event.repository.name }}\n          RELEASE_ID: ${{ github.event.release.id }}\n' \
+  $'          EVENT_ACTION: ${{ github.event.action }}\n          REPOSITORY: ${{ github.event.repository.name }}\n          RELEASE_ID: ${{ github.event.release.id }}\n          RELEASE_NOTES: ${{ github.event.release.body }}\n'
 expect_contract_reject "stale event body authority" "$mutant" "$HELPER"
 
 mutant="$TMP/workflow-missing-helper-current-file.yml"
@@ -364,6 +421,74 @@ expect_contract_reject "release ancestry bypass" "$mutant" "$HELPER"
 mutant="$TMP/workflow-mutable-helper.yml"
 replace_once "$WORKFLOW" "$mutant" './trusted-workflow/release/scripts/tool-drop-announce.sh' './marketplace-data/release/scripts/tool-drop-announce.sh'
 expect_contract_reject "mutable-main helper execution" "$mutant" "$HELPER"
+
+mutant="$TMP/workflow-inline-latest-stable.yml"
+replace_once "$WORKFLOW" "$mutant" \
+  $'        run: ./trusted-workflow/release/scripts/latest-stable-release.sh\n' \
+  $'        run: |\n          latest_id="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .id)"\n          test -n "$latest_id"\n          echo "id=$latest_id" >> "$GITHUB_OUTPUT"\n'
+expect_contract_reject "repository-wide latest stable lookup" "$mutant" "$HELPER"
+
+mutant="$TMP/workflow-mutable-guard.yml"
+replace_once "$WORKFLOW" "$mutant" './trusted-workflow/release/scripts/latest-stable-release.sh' './marketplace-data/release/scripts/latest-stable-release.sh'
+expect_contract_reject "mutable-main guard execution" "$mutant" "$HELPER"
+
+mutant="$TMP/workflow-guard-without-tag.yml"
+replace_once "$WORKFLOW" "$mutant" \
+  $'          RELEASE_ID: ${{ github.event.release.id }}\n          RELEASE_TAG: ${{ github.event.release.tag_name }}\n        run: ./trusted-workflow/release/scripts/latest-stable-release.sh\n' \
+  $'          RELEASE_ID: ${{ github.event.release.id }}\n        run: ./trusted-workflow/release/scripts/latest-stable-release.sh\n'
+expect_contract_reject "release tag not passed to the guard" "$mutant" "$HELPER"
+
+mutant="$TMP/workflow-extra-guard-env.yml"
+replace_once "$WORKFLOW" "$mutant" \
+  $'          RELEASE_TAG: ${{ github.event.release.tag_name }}\n        run: ./trusted-workflow/release/scripts/latest-stable-release.sh\n' \
+  $'          RELEASE_TAG: ${{ github.event.release.tag_name }}\n          RELEASE_NOTES: ${{ github.event.release.body }}\n        run: ./trusted-workflow/release/scripts/latest-stable-release.sh\n'
+expect_contract_reject "extra guard environment key" "$mutant" "$HELPER"
+
+mutant="$TMP/workflow-literal-manifest-repository.yml"
+replace_once "$WORKFLOW" "$mutant" \
+  'repository: ${{ inputs.marketplace-repository || job.workflow_repository }}' \
+  'repository: StartupBros-com/hov-marketplace'
+expect_contract_reject "literal manifest repository" "$mutant" "$HELPER"
+
+mutant="$TMP/workflow-caller-manifest-repository.yml"
+replace_once "$WORKFLOW" "$mutant" \
+  'repository: ${{ inputs.marketplace-repository || job.workflow_repository }}' \
+  'repository: ${{ inputs.marketplace-repository || github.repository }}'
+expect_contract_reject "manifest read from the caller repository" "$mutant" "$HELPER"
+
+mutant="$TMP/workflow-reordered-stable-step.yml"
+swap_once "$WORKFLOW" "$mutant" \
+  $'      - name: Check out current marketplace manifest\n        if: steps.current.outputs.eligible == \'true\'\n        uses: actions/checkout@ac593985615ec2ede58e132d2e21d2b1cbd6127c\n        with:\n          repository: ${{ inputs.marketplace-repository || job.workflow_repository }}\n          ref: main\n          path: marketplace-data\n          persist-credentials: false\n' \
+  $'      - name: Resolve latest stable release\n        if: steps.current.outputs.eligible == \'true\'\n        id: stable\n        env:\n          GH_TOKEN: ${{ github.token }}\n          REPOSITORY: ${{ github.event.repository.name }}\n          RELEASE_ID: ${{ github.event.release.id }}\n          RELEASE_TAG: ${{ github.event.release.tag_name }}\n        run: ./trusted-workflow/release/scripts/latest-stable-release.sh\n'
+expect_contract_reject "latest stable step reordered before the manifest checkout" "$mutant" "$HELPER"
+
+mutant="$TMP/workflow-ancestry-literal-branch.yml"
+replace_once "$WORKFLOW" "$mutant" \
+  'git merge-base --is-ancestor "$release_sha" "origin/$DEFAULT_BRANCH"' \
+  'git merge-base --is-ancestor "$release_sha" "origin/main"'
+expect_contract_reject "ancestry check against a literal branch" "$mutant" "$HELPER"
+
+mutant="$TMP/workflow-extra-announce-env.yml"
+replace_once "$WORKFLOW" "$mutant" \
+  $'          MARKETPLACE_MANIFEST: ${{ github.workspace }}/marketplace-data/.claude-plugin/marketplace.json\n' \
+  $'          MARKETPLACE_MANIFEST: ${{ github.workspace }}/marketplace-data/.claude-plugin/marketplace.json\n          MARKETPLACE_REPOSITORY: ${{ inputs.marketplace-repository }}\n'
+expect_contract_reject "extra announce environment key" "$mutant" "$HELPER"
+
+mutant="$TMP/guard-latest-endpoint.sh"
+replace_once "$GUARD" "$mutant" \
+  'gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100"' \
+  'gh api "repos/$GITHUB_REPOSITORY/releases/latest"'
+if check_contract "$WORKFLOW" "$HELPER" "$mutant" >/dev/null 2>&1; then
+  die "guard using the repository-wide latest release escaped the static contract"
+fi
+pass "guard using the repository-wide latest release mutation rejected"
+
+mutant="$TMP/guard-creation-order.sh"
+replace_once "$GUARD" "$mutant" 'sort_by(.version)' 'sort_by(.created_at)'
+if check_contract "$WORKFLOW" "$HELPER" "$mutant" >/dev/null 2>&1; then
+  die "guard ordering by creation time escaped the static contract"
+fi
+pass "guard ordering by creation time mutation rejected"
 
 mutant="$TMP/helper-caller-url.sh"
 replace_once "$HELPER" "$mutant" "readonly TOOL_RELEASES_ENDPOINT='$FIXED_ENDPOINT'" 'readonly TOOL_RELEASES_ENDPOINT="${ANNOUNCE_URL:?}"'
@@ -512,6 +637,55 @@ fi
 [[ "$(<"$WORKFLOW_PROBE_CALLS")" == 'api repos/fixture-owner/fixture-tool/releases/42' ]] || die "prerelease eligibility touched latest stable or another release"
 grep -Fq 'Current release is draft or prerelease' "$TMP/workflow-probe-log" || die "prerelease eligibility did not report its soft no-op"
 pass "prerelease-only repository resolves in current-state step without latest-stable lookup"
+
+# The stable step's one-line run reaches the trusted guard with exactly the
+# environment the contract pins: each pinned key maps to a fixture value and
+# any other key fails the probe. A guard copy under the mutable manifest
+# checkout exits 125 so running it there would be caught.
+STABLE_PROBE_DIR="$TMP/stable-probe"
+STABLE_PROBE_CALLS="$TMP/stable-gh-calls"
+STABLE_PROBE_OUTPUT="$TMP/stable-output"
+mkdir -p "$STABLE_PROBE_DIR/bin" "$STABLE_PROBE_DIR/trusted-workflow/release/scripts" "$STABLE_PROBE_DIR/marketplace-data/release/scripts"
+cp "$GUARD" "$STABLE_PROBE_DIR/trusted-workflow/release/scripts/latest-stable-release.sh"
+printf '#!/usr/bin/env bash\nexit 125\n' >"$STABLE_PROBE_DIR/marketplace-data/release/scripts/latest-stable-release.sh"
+chmod +x "$STABLE_PROBE_DIR/trusted-workflow/release/scripts/latest-stable-release.sh" "$STABLE_PROBE_DIR/marketplace-data/release/scripts/latest-stable-release.sh"
+cat >"$STABLE_PROBE_DIR/bin/gh" <<'FAKE_GH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$STABLE_PROBE_CALLS"
+[[ "$*" == "api --paginate repos/fixture-owner/fixture-monorepo/releases?per_page=100" ]] || exit 120
+printf '%s\n' '[{"id":9,"tag_name":"pro-gate--v2.0.0","draft":false,"prerelease":false},{"id":8,"tag_name":"hovstack--v0.1.0","draft":false,"prerelease":false},{"id":7,"tag_name":"pro-gate--v1.9.0","draft":false,"prerelease":false}]'
+FAKE_GH
+chmod +x "$STABLE_PROBE_DIR/bin/gh"
+: >"$STABLE_PROBE_CALLS"
+: >"$STABLE_PROBE_OUTPUT"
+stable_env_args=()
+while IFS= read -r key; do
+  case "$key" in
+    GH_TOKEN) stable_env_args+=("GH_TOKEN=fixture-token") ;;
+    REPOSITORY) stable_env_args+=("REPOSITORY=fixture-monorepo") ;;
+    RELEASE_ID) stable_env_args+=("RELEASE_ID=7") ;;
+    RELEASE_TAG) stable_env_args+=("RELEASE_TAG=pro-gate--v1.9.0") ;;
+    *) die "latest stable step carries an unexpected environment key: $key" ;;
+  esac
+done < <(yq -r '.jobs.announce.steps[] | select(.name == "Resolve latest stable release") | .env | keys | .[]' "$WORKFLOW")
+[[ "${#stable_env_args[@]}" == 4 ]] || die "latest stable step does not carry its four environment keys"
+workflow_stable_run="$(yq -r '.jobs.announce.steps[] | select(.name == "Resolve latest stable release") | .run' "$WORKFLOW")"
+if ! (cd "$STABLE_PROBE_DIR" && env \
+  PATH="$STABLE_PROBE_DIR/bin:$PATH" \
+  GITHUB_REPOSITORY=fixture-owner/fixture-monorepo \
+  GITHUB_OUTPUT="$STABLE_PROBE_OUTPUT" \
+  STABLE_PROBE_CALLS="$STABLE_PROBE_CALLS" \
+  "${stable_env_args[@]}" \
+  bash -c "$workflow_stable_run") >"$TMP/stable-probe-log" 2>&1; then
+  command cat "$TMP/stable-probe-log" >&2
+  die "latest stable workflow probe"
+fi
+[[ "$(<"$STABLE_PROBE_OUTPUT")" == 'id=9' ]] || die "latest stable probe did not resolve the family winner"
+[[ "$(<"$STABLE_PROBE_CALLS")" == 'api --paginate repos/fixture-owner/fixture-monorepo/releases?per_page=100' ]] || die "latest stable probe made unexpected gh calls"
+grep -Fxq 'hov-drop-announce: status=not-announced reason=not-latest repository=fixture-monorepo tag=pro-gate--v1.9.0 plugin=pro-gate' "$TMP/stable-probe-log" \
+  || die "latest stable probe did not print the not-announced marker"
+pass "latest stable step runs the trusted guard with its pinned environment and skips an older same-prefix release with the marker"
 
 FIXTURE_REPOSITORY='fixture-tool'
 FIXTURE_VERSION='1.2.3'

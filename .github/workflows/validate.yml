@@ -24,6 +24,7 @@ jobs:
       - name: Lint Tool Drop announce scripts
         run: >-
           shellcheck release/scripts/tool-drop-announce.sh
+          release/scripts/latest-stable-release.sh
           release/scripts/provision-ci-tools.sh
           release/tests/provision-ci-tools.test.sh
           release/scripts/repin-reconcile.sh
@@ -32,6 +33,7 @@ jobs:
           release/scripts/announce-pin-roll.sh
           release/tests/tool-drop-announce.test.sh
           release/tests/tool-drop-announce-retry.test.sh
+          release/tests/latest-stable-release.test.sh
           release/tests/notes-summary.test.sh
           release/tests/repin-reconcile.test.sh
           release/tests/repin-land.test.sh
@@ -47,6 +49,8 @@ jobs:
         run: ./release/tests/validate-marketplace.test.sh
       - name: Run Tool Drop announce security tests
         run: ./release/tests/tool-drop-announce.test.sh
+      - name: Run latest stable guard tests
+        run: bash ./release/tests/latest-stable-release.test.sh
       - name: Run announce retry tests
         run: bash ./release/tests/tool-drop-announce-retry.test.sh
       - name: Run notes-summary tests

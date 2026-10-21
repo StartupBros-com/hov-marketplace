@@ -1,8 +1,10 @@
 name: hov Tool Drop announce
 
-# Reusable announce-only release train for every hov-marketplace plugin.
+# Reusable announce-only release train for every marketplace plugin, whether
+# it releases from its own repository on v<version> tags or from a shared
+# repository on <name>--v<version> tags.
 #
-# Caller (in the plugin repo), pinned to a full commit SHA of this repo:
+# Caller, pinned to a full commit SHA of the repository holding this file:
 #
 #   name: Release train
 #   on:
@@ -13,7 +15,11 @@ name: hov Tool Drop announce
 #     id-token: write
 #   jobs:
 #     announce:
-#       uses: StartupBros-com/hov-marketplace/.github/workflows/hov-tool-drop-announce.yml@<sha>
+#       uses: <owner>/<repo>/.github/workflows/hov-tool-drop-announce.yml@<sha>
+#       # Optional. The marketplace manifest is read from the repository this
+#       # file lives in unless a caller names another one here.
+#       with:
+#         marketplace-repository: <owner>/<repo>
 #
 # Identity is the OIDC token, not a shared secret: the announce endpoint
 # verifies repository/repository_owner claims and pins job_workflow_ref to
@@ -22,6 +28,13 @@ name: hov Tool Drop announce
 
 on:
   workflow_call:
+    inputs:
+      marketplace-repository:
+        description: >-
+          Repository holding the marketplace manifest, as owner/name. Empty
+          means the repository this workflow file lives in.
+        type: string
+        required: false
 
 permissions: {}
 
@@ -107,24 +120,31 @@ jobs:
 
       # This mutable checkout supplies current catalog data only. No code from
       # it is executed; the helper above is pinned to the called workflow SHA.
+      # The manifest lives in this workflow's own repository unless the caller
+      # names another; defaulting to the caller's repository would make a
+      # per-plugin caller read a repository with no manifest.
       - name: Check out current marketplace manifest
         if: steps.current.outputs.eligible == 'true'
         uses: actions/checkout@ac593985615ec2ede58e132d2e21d2b1cbd6127c
         with:
-          repository: StartupBros-com/hov-marketplace
+          repository: ${{ inputs.marketplace-repository || job.workflow_repository }}
           ref: main
           path: marketplace-data
           persist-credentials: false
 
+      # Latest is judged inside the release tag's family (its <name>-- prefix,
+      # or plain v<version> tags), by semver over a paginated listing, never by
+      # the repository-wide latest release: a shared repository has one of
+      # those. The guard runs from the trusted checkout, never from the tag.
       - name: Resolve latest stable release
         if: steps.current.outputs.eligible == 'true'
         id: stable
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          latest_id="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .id)"
-          test -n "$latest_id"
-          echo "id=$latest_id" >> "$GITHUB_OUTPUT"
+          REPOSITORY: ${{ github.event.repository.name }}
+          RELEASE_ID: ${{ github.event.release.id }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: ./trusted-workflow/release/scripts/latest-stable-release.sh
 
       - name: Announce release
         if: steps.current.outputs.eligible == 'true'
