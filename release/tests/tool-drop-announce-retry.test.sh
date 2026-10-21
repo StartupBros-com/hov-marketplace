@@ -25,7 +25,7 @@ setup() {
   : >"$STUB_BODY"
   : >"$STUB_POST_TOKENS"
 
-  export REPOSITORY="stub-repo" RELEASE_ID="1"
+  export REPOSITORY="stub-repo" PLUGIN_NAME="stub-repo" RELEASE_ID="1"
   export CURRENT_RELEASE_NOTES=""
   # shellcheck source=/dev/null
   source "$REPO_ROOT/release/scripts/tool-drop-announce.sh"
