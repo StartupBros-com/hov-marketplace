@@ -1,13 +1,14 @@
 name: Repin reconcile
 
 # Keep the distribution manifest converging on what the plugins have actually
-# released, by opening a repin PR whenever the two disagree.
+# released: open a repin PR whenever the two disagree, ask GitHub to merge it once
+# its required checks pass, close the repin PRs it superseded, and publish the
+# staged draft release a card on main already names.
 #
-# This is the piece that removes the manual step the release recipe used to
-# require. It does NOT merge: the card is still updated by a reviewed PR, because
-# a standing credential able to write this manifest unattended is the one whose
-# compromise reaches every installed client. What changes is only who does the
-# typing.
+# The card still changes only through a PR on main that passes the required
+# checks; this workflow pushes nothing to main and holds no bypass. What it
+# removed is the human typing between "the checks are green" and "merge", and
+# between "the card names the draft" and "publish", which nobody did reliably.
 #
 # The write is local — a branch and a PR in THIS repository. The reads are release
 # metadata on the plugin repositories. Draft-first means the release that needs
@@ -16,23 +17,36 @@ name: Repin reconcile
 # short-lived token minted from the org's least-privilege release App
 # (HOV_RELEASE_APP_ID + HOV_RELEASE_APP_PRIVATE_KEY, contents read/write on the
 # plugin repositories only). The token must carry contents: write because GitHub
-# shows drafts only to push-capable identities; this workflow only READS with it,
+# shows drafts only to push-capable identities. Its one write is publishing a
+# draft that a card on main already pins (scripts/repin-publish.sh), after
+# re-checking tag, version, commit, default-branch ancestry and uploaded assets,
 # and it expires with the job. Without those secrets the job falls back to
-# GITHUB_TOKEN and can only see published releases. The manifest write remains
-# local: a branch and a PR in this repository, reviewed by a human.
+# GITHUB_TOKEN, sees only published releases, and publishes nothing.
 #
-# The PR itself is opened as the StartupBros HOV Marketplace Bot App
-# (HOV_MARKETPLACE_APP_ID + HOV_MARKETPLACE_APP_PRIVATE_KEY, contents and
-# pull-request write on THIS repository only, never merge): the organization keeps
-# GitHub's default that forbids GITHUB_TOKEN from creating pull requests, and a PR
-# opened by an App token runs the validator without the approval gate a
-# GITHUB_TOKEN-created PR would sit behind. Without the bot secrets the branch is
-# still pushed and the run tells you which PR to open by hand.
+# The PR is opened, queued for auto-merge, and closed when superseded as the
+# StartupBros HOV Marketplace Bot App (HOV_MARKETPLACE_APP_ID +
+# HOV_MARKETPLACE_APP_PRIVATE_KEY, contents and pull-request write on THIS
+# repository only): the organization keeps GitHub's default that forbids
+# GITHUB_TOKEN from creating pull requests, and a PR opened by an App token runs
+# the validator without the approval gate a GITHUB_TOKEN-created PR would sit
+# behind. Auto-merge is requested only after scripts/repin-land.sh proves the PR
+# changes nothing but the manifest and carries exactly the reconciler's output.
+# The merge still waits for the required checks and every ruleset on main.
+# Without the bot secrets the branch is still pushed and the run tells you which
+# PR to open by hand.
 
 on:
+  # A merged repin publishes its draft at once instead of at the next scheduled run.
+  push:
+    branches: [main]
+    paths: ['.claude-plugin/marketplace.json']
   schedule:
-    # Off the hour on purpose: :00 is where every scheduled job on GitHub piles up.
-    - cron: '23 * * * *'
+    # Nothing wakes this workflow when a plugin stages a draft, so the schedule sets
+    # how long a draft waits for its card. GitHub delays and drops scheduled runs: on
+    # 2026-10-17 the hourly '23 * * * *' ran seven times, 2.2-5.3 hours apart. Four ticks
+    # an hour, all off :00 (where every scheduled job on GitHub piles up), give it
+    # more chances. A run with no drift opens nothing and takes about 30 seconds.
+    - cron: '8,23,38,53 * * * *'
   workflow_dispatch:
     inputs:
       only_plugin:
@@ -100,16 +114,20 @@ jobs:
           ./scripts/repin-reconcile.sh
           if [ -s "$PLAN_FILE" ]; then
             echo "drift=true" >> "$GITHUB_OUTPUT"
-            # Content-addressed branch name: the SAME drift always produces the
-            # SAME branch, so a second run finds the branch already there and
-            # opens nothing. That is what makes an hourly schedule safe.
-            echo "key=$(sha256sum "$PLAN_FILE" | cut -c1-12)" >> "$GITHUB_OUTPUT"
+            # Content-addressed branch name: the SAME drift on the SAME main always
+            # produces the SAME branch, so a second run finds the PR already open
+            # and opens nothing. That is what makes a frequent schedule safe. Main's
+            # sha is in the key because the required checks demand an up-to-date
+            # branch: once main moves, the old PR can never merge, so the next run
+            # opens a fresh one and repin-land.sh closes the old.
+            key="$( { cat "$PLAN_FILE"; git rev-parse HEAD; } | sha256sum | cut -c1-12)"
+            echo "key=$key" >> "$GITHUB_OUTPUT"
+            echo "blob=$(git hash-object .claude-plugin/marketplace.json)" >> "$GITHUB_OUTPUT"
           else
             echo "drift=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Decide whether the marketplace bot is available to open the PR
-        if: steps.reconcile.outputs.drift == 'true'
+      - name: Decide whether the marketplace bot is available to open and land the PR
         id: bot_identity
         env:
           HOV_MARKETPLACE_APP_ID: ${{ secrets.HOV_MARKETPLACE_APP_ID }}
@@ -119,11 +137,12 @@ jobs:
             echo "have_bot=true" >> "$GITHUB_OUTPUT"
           else
             echo "have_bot=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::marketplace bot secrets are not visible; the repin branch will be pushed but the PR must be opened by hand (GITHUB_TOKEN may not create pull requests in this organization)."
+            echo "::warning::marketplace bot secrets are not visible; a repin branch will be pushed but the PR must be opened and merged by hand (GITHUB_TOKEN may not create pull requests in this organization)."
           fi
 
+      # Minted on every run, drift or not: with no drift it closes repin PRs main already covers.
       - name: Mint a marketplace-bot token for this repository
-        if: steps.reconcile.outputs.drift == 'true' && steps.bot_identity.outputs.have_bot == 'true'
+        if: steps.bot_identity.outputs.have_bot == 'true'
         id: bot
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
@@ -158,12 +177,12 @@ jobs:
             while IFS=$'\t' read -r name version tag rel_id sha is_draft; do
               [ -n "$name" ] || continue
               state=published
-              [ "$is_draft" = true ] && state='**draft** (staged, publish after this merges)'
+              [ "$is_draft" = true ] && state='**draft** (staged; the reconciler publishes it once this merges)'
               printf '| %s | %s | `%s` | %s | `%s` | %s |\n' \
                 "$name" "$version" "$tag" "$rel_id" "${sha:0:12}" "$state"
             done < "$PLAN_FILE"
-            printf '\nRe-running the reconciler on this same drift is a no-op — the branch name is derived from the change itself.\n'
-            printf '\nA plugin listed as **draft** is staged and waiting on this card: merge here, then publish it (pro-gate: the "Publish staged release" workflow).\n'
+            printf '\nRe-running the reconciler on this same drift and main is a no-op: the branch name is derived from both.\n'
+            printf '\nThe reconciler requests auto-merge on this PR and merges it once the required checks pass. A plugin listed as **draft** is published by the next reconcile run after the merge.\n'
           } > "$RUNNER_TEMP/pr-body.md"
 
           if [ "$branch_exists" = false ]; then
@@ -181,3 +200,31 @@ jobs:
           gh pr create --base main --head "$BRANCH" \
             --title 'chore(marketplace): repin cards to the plugins current releases' \
             --body-file "$RUNNER_TEMP/pr-body.md"
+
+      - name: Request auto-merge and close superseded repin PRs
+        if: steps.bot_identity.outputs.have_bot == 'true'
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          REPO: ${{ github.repository }}
+          BOT_SLUG: ${{ steps.bot.outputs.app-slug }}
+          DESIRED_BRANCH: ${{ steps.reconcile.outputs.drift == 'true' && format('repin/auto-{0}', steps.reconcile.outputs.key) || '' }}
+          EXPECTED_BLOB: ${{ steps.reconcile.outputs.blob }}
+          ONLY_PLUGIN: ${{ inputs.only_plugin }}
+        run: ./scripts/repin-land.sh
+
+      # Runs even when an earlier step failed: publishing a draft main already pins
+      # does not depend on this run's repin. It reads the manifest at the commit
+      # this run checked out, not the working tree the reconcile step rewrote, and
+      # re-reads live main with this job's token right before each publish.
+      - name: Publish staged releases the card on main already pins
+        if: ${{ !cancelled() && steps.app.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          MARKETPLACE_REPO: ${{ github.repository }}
+          MARKETPLACE_TOKEN: ${{ github.token }}
+          ONLY_PLUGIN: ${{ inputs.only_plugin }}
+          MANIFEST: ${{ runner.temp }}/main-manifest.json
+        run: |
+          set -euo pipefail
+          git show "${GITHUB_SHA}:.claude-plugin/marketplace.json" > "$MANIFEST"
+          ./scripts/repin-publish.sh

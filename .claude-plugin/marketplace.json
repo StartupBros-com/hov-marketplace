@@ -36,13 +36,13 @@
       "source": {
         "source": "url",
         "url": "https://github.com/StartupBros-com/pro-gate.git",
-        "sha": "62476372481e38a18884767915940c077422905b"
+        "sha": "4989a610aebaec86a490882c63394279c709e6ae"
       },
       "description": "Run a final pull request review using the Pro model selected by your ChatGPT account, with guided runtime setup and no automatic merge.",
       "metadata": {
-        "version": "0.60.1",
-        "releaseId": 402689639,
-        "releaseTag": "v0.60.1"
+        "version": "0.65.2",
+        "releaseId": 416297431,
+        "releaseTag": "v0.65.2"
       },
       "card": {
         "rows": [
@@ -250,6 +250,29 @@
           "\ud83d\udcc4 **PDFs, Word files, forms, scans** \u00b7 AcroForm fields, typed or drawn rules and captions, .docx via LibreOffice or Word, owner-password forms, OCR for scans"
         ],
         "run": "Then type `/sign-it` with a document; the first run sets up your signature and details"
+      }
+    },
+    {
+      "name": "harness-optimizer",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/StartupBros-com/harness-optimizer.git",
+        "sha": "6d1fbab5164327631c1dca38b02ff6de66bb9d9a"
+      },
+      "description": "Investigate recurring Claude Code setup problems across six evidence lanes, select up to three repair families, and independently challenge the diagnosis, changes and outcome. Explicitly invoked, with existing permissions and specialist consent preserved. Attempt limits are not spending caps.",
+      "metadata": {
+        "version": "0.2.0",
+        "releaseId": 418994909,
+        "releaseTag": "v0.2.0"
+      },
+      "card": {
+        "tagline": "Claude Code plugin: investigate recurring setup problems before changing things",
+        "rows": [
+          "**Six areas, one investigation**: friction, memory, instructions, context, permissions and tooling",
+          "**Separate investigators and reviewers**: challenge the diagnosis, changes and reported outcome for up to three repair families",
+          "**Only when you invoke it**: existing approvals still apply; missing evidence stays visible and attempt limits are not spending caps"
+        ],
+        "run": "Run `/harness-optimizer:harness-optimizer` in the project you want to investigate"
       }
     }
   ]

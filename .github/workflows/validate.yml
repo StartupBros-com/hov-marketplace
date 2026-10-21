@@ -27,13 +27,15 @@ jobs:
           scripts/provision-ci-tools.sh
           tests/provision-ci-tools.test.sh
           scripts/repin-reconcile.sh
-          scripts/announce-pin-drift.sh
+          scripts/repin-land.sh
+          scripts/repin-publish.sh
           scripts/announce-pin-roll.sh
           tests/tool-drop-announce.test.sh
           tests/tool-drop-announce-retry.test.sh
           tests/notes-summary.test.sh
           tests/repin-reconcile.test.sh
-          tests/announce-pin-drift.test.sh
+          tests/repin-land.test.sh
+          tests/repin-publish.test.sh
           tests/announce-pin-roll.test.sh
       - name: Test pinned CI tool provisioning without network access
         run: bash ./tests/provision-ci-tools.test.sh
@@ -51,8 +53,10 @@ jobs:
         run: bash ./tests/notes-summary.test.sh
       - name: Run repin reconcile tests
         run: bash ./tests/repin-reconcile.test.sh
-      - name: Run announce pin drift tests
-        run: bash ./tests/announce-pin-drift.test.sh
+      - name: Run repin land tests
+        run: bash ./tests/repin-land.test.sh
+      - name: Run repin publish tests
+        run: bash ./tests/repin-publish.test.sh
       - name: Run announce pin roll tests
         run: bash ./tests/announce-pin-roll.test.sh
 

@@ -75,6 +75,7 @@ expected_source_url() {
     papercut) printf '%s\n' 'https://github.com/StartupBros-com/papercut.git' ;;
     product-video) printf '%s\n' 'https://github.com/StartupBros-com/product-video.git' ;;
     sign-it) printf '%s\n' 'https://github.com/StartupBros-com/sign-it.git' ;;
+    harness-optimizer) printf '%s\n' 'https://github.com/StartupBros-com/harness-optimizer.git' ;;
     *) return 1 ;;
   esac
 }
