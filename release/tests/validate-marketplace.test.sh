@@ -38,6 +38,25 @@ expect_fail() {
   fi
 }
 
+# expect_fail_reason LABEL NEEDLE CMD...: the command must fail, and its
+# output must name the rule that refused it, so a planted negative cannot be
+# carried by some other check.
+expect_fail_reason() {
+  local label="$1" needle="$2"
+  shift 2
+  if "$@" >"$TMP/output" 2>&1; then
+    printf 'not ok - %s unexpectedly passed\n' "$label" >&2
+    exit 1
+  elif ! grep -Fq -- "$needle" "$TMP/output"; then
+    printf 'not ok - %s failed for another reason\n' "$label" >&2
+    command cat "$TMP/output" >&2
+    exit 1
+  else
+    printf 'ok - %s\n' "$label"
+    fail_count=$((fail_count + 1))
+  fi
+}
+
 write_valid_release_workflow() {
   local repo="$1"
   cat >"$repo/.github/workflows/release-train.yml" <<'EOF'
@@ -91,6 +110,23 @@ write_manifest() {
         {name: "pro-gate", source: {source: "url", url: "https://github.com/StartupBros-com/pro-gate.git", sha: $pro_sha}, description: "Pro gate.", metadata: {version: "2.0.0", releaseId: 20, releaseTag: "v2.0.0"}}
       ]
     }' >"$WORK/.claude-plugin/marketplace.json"
+}
+
+# One full fetch per distinct monorepo remote per run, and nothing left under
+# the validator's TMPDIR once it exits, pass or fail. The traced run sets
+# TMPDIR and GIT_TRACE on the expect_* call; the trace is reset here.
+assert_monorepo_cache() {
+  local label="$1" fetches leftovers
+  fetches="$(grep -c -F -- '+refs/heads/main:refs/announce/main' "$TMP/git-trace" || true)"
+  leftovers="$(find "$TMP/validator-tmp" -mindepth 1 -maxdepth 1 | wc -l)"
+  : >"$TMP/git-trace"
+  if [[ "$fetches" == 1 && "$leftovers" == 0 ]]; then
+    printf 'ok - %s\n' "$label"
+    pass_count=$((pass_count + 1))
+  else
+    printf 'not ok - %s (fetches=%s leftovers=%s)\n' "$label" "$fetches" "$leftovers" >&2
+    exit 1
+  fi
 }
 
 validate() {
@@ -304,5 +340,234 @@ write_manifest "$TOKEN_SHA" "$PRO_SHA" 10
 jq '.plugins[0].card = {rows: ["one", "two", "three"]}' "$WORK/.claude-plugin/marketplace.json" >"$TMP/card-norun.json"
 mv "$TMP/card-norun.json" "$WORK/.claude-plugin/marketplace.json"
 expect_fail "card without run line rejected" validate syntax
+
+# --- both entry shapes (U6): git-subdir entries pin plugins/<name>/ in one monorepo ---
+# One local monorepo remote stands in for the renamed repository, so no case
+# needs the network. Its root carries only the workflow set: no root VERSION,
+# no root plugin manifest, no root skill directory.
+
+MONOREPO="$TMP/hovstack"
+MONOREPO_REMOTE="$REMOTE_ROOT/StartupBros-com/hovstack.git"
+MONOREPO_URL="https://github.com/StartupBros-com/hovstack.git"
+git init -q "$MONOREPO"
+git -C "$MONOREPO" config user.name Fixture
+git -C "$MONOREPO" config user.email fixture@example.com
+mkdir -p "$MONOREPO/.github/workflows"
+write_valid_release_workflow "$MONOREPO"
+git -C "$MONOREPO" add .github/workflows/release-train.yml
+git -C "$MONOREPO" commit -qm 'root workflow set'
+git -C "$MONOREPO" branch -M main
+git init -q --bare "$MONOREPO_REMOTE"
+
+publish_monorepo() {
+  git -C "$MONOREPO" push -q "$MONOREPO_REMOTE" main --tags
+}
+
+# add_subdir_plugin NAME VERSION: commits plugins/NAME/ on main, tags
+# NAME--vVERSION, publishes, prints the commit.
+add_subdir_plugin() {
+  local name="$1" version="$2"
+  local dir="$MONOREPO/plugins/$name"
+  mkdir -p "$dir/.claude-plugin" "$dir/skills/$name"
+  jq -n --arg name "$name" --arg version "$version" '{name: $name, version: $version}' >"$dir/.claude-plugin/plugin.json"
+  printf '%s\n' "$version" >"$dir/VERSION"
+  printf '# fixture\n' >"$dir/skills/$name/SKILL.md"
+  git -C "$MONOREPO" add "plugins/$name"
+  git -C "$MONOREPO" commit -qm "$name $version"
+  git -C "$MONOREPO" tag "$name--v$version"
+  publish_monorepo
+  git -C "$MONOREPO" rev-parse HEAD
+}
+
+SIGN_SHA="$(add_subdir_plugin sign-it 0.5.0)"
+PACK_SHA="$(add_subdir_plugin hovstack 0.1.0)"
+PRO_SUBDIR_SHA="$(add_subdir_plugin pro-gate 2.1.0)"
+
+# The url fixtures (token-eater 10, pro-gate 20) plus two git-subdir entries.
+write_mixed_manifest() {
+  write_manifest "$TOKEN_SHA" "$PRO_SHA" 10
+  jq --arg url "$MONOREPO_URL" --arg sign_sha "$SIGN_SHA" --arg pack_sha "$PACK_SHA" '.plugins += [
+    {name: "sign-it", source: {source: "git-subdir", url: $url, path: "plugins/sign-it", sha: $sign_sha}, description: "Sign it.", metadata: {version: "0.5.0", releaseId: 40, releaseTag: "sign-it--v0.5.0"}},
+    {name: "hovstack", source: {source: "git-subdir", url: $url, path: "plugins/hovstack", sha: $pack_sha}, description: "The stack.", metadata: {version: "0.1.0", releaseId: 50, releaseTag: "hovstack--v0.1.0"}}
+  ]' "$WORK/.claude-plugin/marketplace.json" >"$TMP/mixed.json"
+  mv "$TMP/mixed.json" "$WORK/.claude-plugin/marketplace.json"
+}
+
+# mutate_manifest [jq options] FILTER: rewrites the working manifest in place.
+mutate_manifest() {
+  jq "$@" "$WORK/.claude-plugin/marketplace.json" >"$TMP/mutated.json"
+  mv "$TMP/mutated.json" "$WORK/.claude-plugin/marketplace.json"
+}
+
+validate_against_base() {
+  (cd "$WORK" && BASE_REF=HEAD MARKETPLACE_MANIFEST=.claude-plugin/marketplace.json "$VALIDATOR" syntax)
+}
+
+write_mixed_manifest
+expect_pass "mixed manifest passes syntax validation" validate syntax
+mkdir -p "$TMP/validator-tmp"
+TMPDIR="$TMP/validator-tmp" GIT_TRACE="$TMP/git-trace" expect_pass "mixed manifest passes full validation" validate full
+assert_monorepo_cache "full validation fetches main once for two git-subdir entries and removes its cache"
+TMPDIR="$TMP/validator-tmp" GIT_TRACE="$TMP/git-trace" expect_pass "git-subdir entry accepts the prefixed expected tag and payload paths under its path" env EXPECTED_PLUGIN_NAME=sign-it EXPECTED_PLUGIN_VERSION=0.5.0 EXPECTED_RELEASE_ID=40 EXPECTED_RELEASE_TAG=sign-it--v0.5.0 EXPECTED_SHA="$SIGN_SHA" EXPECTED_PAYLOAD_PATHS=.claude-plugin/plugin.json,skills/sign-it/SKILL.md bash -c 'cd "$1" && MARKETPLACE_TEST_REMOTE_ROOT="$2" ALLOW_LOCAL_FILE_REMOTES=1 "$3" full' _ "$WORK" "$REMOTE_ROOT" "$VALIDATOR"
+assert_monorepo_cache "an expected-inputs full run also fetches main once and removes its cache"
+expect_fail_reason "the monorepo url is one configuration value: another literal refuses every git-subdir entry" "git-subdir entry must use the monorepo source https://github.com/StartupBros-com/scratch.git" env MONOREPO_SOURCE_URL=https://github.com/StartupBros-com/scratch.git bash -c 'cd "$1" && "$2" syntax' _ "$WORK" "$VALIDATOR"
+
+# Twin: a git-subdir entry needs no root VERSION, root manifest or root skill
+# directory (the fixture has none) and no root release train either.
+git -C "$MONOREPO" rm -q .github/workflows/release-train.yml
+git -C "$MONOREPO" commit -qm 'no root release train'
+publish_monorepo
+expect_pass "git-subdir entry is not required to have a root release train" validate full
+mkdir -p "$MONOREPO/.github/workflows"
+write_valid_release_workflow "$MONOREPO"
+git -C "$MONOREPO" add .github/workflows/release-train.yml
+git -C "$MONOREPO" commit -qm 'restore root release train'
+publish_monorepo
+
+# Negative: a root release train that is present must satisfy the contract.
+printf '\n# TOOL_RELEASE_ANNOUNCE_SECRET must never return\n' >>"$MONOREPO/.github/workflows/release-train.yml"
+git -C "$MONOREPO" commit -qam 'static secret at the monorepo root'
+publish_monorepo
+expect_fail_reason "static announce secret in the monorepo root release train rejected" "release train still uses the static announce secret" validate full
+write_valid_release_workflow "$MONOREPO"
+git -C "$MONOREPO" commit -qam 'restore root release train contract'
+publish_monorepo
+
+# Negative: lockstep on main for the plugin's own VERSION.
+printf '9.9.9\n' >"$MONOREPO/plugins/sign-it/VERSION"
+git -C "$MONOREPO" commit -qam 'sign-it VERSION off lockstep'
+publish_monorepo
+expect_fail_reason "git-subdir plugins/<name>/VERSION must match the plugin manifest on main" "main plugins/sign-it/VERSION 9.9.9 differs from manifest 0.5.0" validate full
+printf '0.5.0\n' >"$MONOREPO/plugins/sign-it/VERSION"
+git -C "$MONOREPO" commit -qam 'restore sign-it lockstep'
+publish_monorepo
+
+# Negative: a prefixed tag on a commit that is not on main is reachable at
+# the remote but is not a main sha. The second git-subdir entry carries the
+# bad pin: the first entry's fetch must be reused for the traced count to
+# read one on the fail path, so a per-entry cache would read two here too.
+git -C "$MONOREPO" checkout -q -b side
+printf '0.2.0\n' >"$MONOREPO/plugins/hovstack/VERSION"
+jq '.version = "0.2.0"' "$MONOREPO/plugins/hovstack/.claude-plugin/plugin.json" >"$TMP/side-manifest.json"
+mv "$TMP/side-manifest.json" "$MONOREPO/plugins/hovstack/.claude-plugin/plugin.json"
+git -C "$MONOREPO" commit -qam 'hovstack 0.2.0 on a side branch'
+git -C "$MONOREPO" tag hovstack--v0.2.0
+SIDE_SHA="$(git -C "$MONOREPO" rev-parse HEAD)"
+git -C "$MONOREPO" push -q "$MONOREPO_REMOTE" side hovstack--v0.2.0
+git -C "$MONOREPO" checkout -q main
+write_mixed_manifest
+mutate_manifest --arg sha "$SIDE_SHA" '(.plugins[] | select(.name == "hovstack")) |= (.source.sha = $sha | .metadata = {version: "0.2.0", releaseId: 51, releaseTag: "hovstack--v0.2.0"})'
+TMPDIR="$TMP/validator-tmp" GIT_TRACE="$TMP/git-trace" expect_fail_reason "git-subdir pinned commit must be reachable from main" "plugin hovstack pinned commit is not reachable from main at" validate full
+assert_monorepo_cache "a failing full run reuses the first entry's fetch and still removes its cache"
+
+# Twin: a url entry's release train may reference the shared workflow under
+# the new repository name during the window.
+yq -i '.jobs.announce.uses = "StartupBros-com/hovstack/.github/workflows/hov-tool-drop-announce.yml@c981b872ebf650805200ad72c8b7142232f8b3f6"' "$TMP/token-eater/.github/workflows/release-train.yml"
+publish_fixture_commit 'announce reference under the new repository name'
+write_mixed_manifest
+expect_pass "url entry may reference the shared workflow under the new repository name" validate full
+restore_valid_token_fixture
+publish_fixture_commit 'restore announce reference'
+
+# Syntax negatives: each is the valid mixed manifest with one field changed.
+write_mixed_manifest
+mutate_manifest '(.plugins[] | select(.name == "sign-it") | .source.url) = "https://github.com/StartupBros-com/sign-it.git"'
+expect_fail_reason "git-subdir url under another repository of the same owner rejected" "plugin sign-it git-subdir entry must use the monorepo source" validate syntax
+
+write_mixed_manifest
+mutate_manifest '(.plugins[] | select(.name == "sign-it")) |= (.name = "sign--it" | .source.path = "plugins/sign--it" | .metadata.releaseTag = "sign--it--v0.5.0")'
+expect_fail_reason "plugin name containing -- rejected" "plugin names must not contain --, the release tag separator: sign--it" validate syntax
+
+write_mixed_manifest
+mutate_manifest '(.plugins[] | select(.name == "hovstack")) |= (.source = {source: "url", url: "https://github.com/StartupBros-com/hovstack.git", sha: .source.sha} | .metadata.releaseTag = "v0.1.0")'
+expect_fail_reason "hovstack is admitted only as a git-subdir entry" "plugin hovstack is not approved for this marketplace" validate syntax
+
+write_mixed_manifest
+mutate_manifest '(.plugins[] | select(.name == "sign-it") | .metadata.releaseTag) = "v0.5.0"'
+expect_fail_reason "git-subdir entry with a v-tag rejected" "plugin sign-it metadata.releaseTag does not match metadata.version for a git-subdir entry" validate syntax
+
+write_mixed_manifest
+mutate_manifest '(.plugins[] | select(.name == "sign-it") | .source.path) = "plugins/sign-it-old"'
+expect_fail_reason "git-subdir path must be plugins/<name>" "plugin sign-it git-subdir entry path must be plugins/sign-it" validate syntax
+
+write_mixed_manifest
+mutate_manifest '(.plugins[] | select(.name == "sign-it")) |= del(.metadata)'
+expect_fail_reason "git-subdir entry must carry release metadata" "marketplace manifest has an invalid shape" validate syntax
+
+write_mixed_manifest
+mutate_manifest '(.plugins[] | select(.name == "sign-it") | .metadata.releaseTag) = ""'
+expect_fail_reason "git-subdir entry must carry a non-empty release tag" "plugin sign-it git-subdir entry must carry a non-empty release tag" validate syntax
+
+write_mixed_manifest
+mutate_manifest '(.plugins[] | select(.name == "sign-it") | .metadata.version) = ""'
+expect_fail_reason "git-subdir entry with an empty version rejected before the tag rule" "plugin sign-it git-subdir entry must carry release metadata" validate syntax
+
+write_mixed_manifest
+mutate_manifest '(.plugins[] | select(.name == "sign-it") | .source.path) = "plugins/sign-it\u001f"'
+expect_fail_reason "control character in a git-subdir path rejected by the schema" "marketplace manifest has an invalid shape" validate syntax
+
+write_mixed_manifest
+mutate_manifest '(.plugins[] | select(.name == "sign-it") | .metadata.version) = "0.5.0\u001f"'
+expect_fail_reason "control character in metadata.version rejected by the schema" "marketplace manifest has an invalid shape" validate syntax
+
+write_mixed_manifest
+mutate_manifest '(.plugins[] | select(.name == "sign-it") | .metadata.releaseTag) = "sign-it--v0.5.0\u001f"'
+expect_fail_reason "control character in metadata.releaseTag rejected by the schema" "marketplace manifest has an invalid shape" validate syntax
+
+write_mixed_manifest
+mutate_manifest '(.plugins[] | select(.name == "sign-it")) |= (.name = "scratch" | .source.path = "plugins/scratch" | .metadata.releaseTag = "scratch--v0.5.0")'
+expect_fail_reason "git-subdir entry with an unapproved name rejected" "plugin scratch is not approved for this marketplace" validate syntax
+
+# Transition cases against a committed mixed base: the only permitted shape
+# change is url to git-subdir with a new release id and the prefixed tag.
+write_mixed_manifest
+(cd "$WORK" && git add .claude-plugin/marketplace.json && git commit -qm 'mixed base')
+
+write_mixed_manifest
+mutate_manifest --arg url "$MONOREPO_URL" --arg sha "$PRO_SUBDIR_SHA" '(.plugins[] | select(.name == "pro-gate")) |= (.source = {source: "git-subdir", url: $url, path: "plugins/pro-gate", sha: $sha} | .metadata = {version: "2.1.0", releaseId: 21, releaseTag: "pro-gate--v2.1.0"})'
+expect_pass "url to git-subdir with a new release id and the prefixed tag passes" validate_against_base
+
+write_mixed_manifest
+mutate_manifest --arg url "$MONOREPO_URL" --arg sha "$PRO_SUBDIR_SHA" '(.plugins[] | select(.name == "pro-gate")) |= (.source = {source: "git-subdir", url: $url, path: "plugins/pro-gate", sha: $sha} | .metadata = {version: "2.0.0", releaseId: 20, releaseTag: "pro-gate--v2.0.0"})'
+expect_fail_reason "same-id shape change rejected" "plugin pro-gate changed immutable metadata for releaseId 20" validate_against_base
+
+write_mixed_manifest
+mutate_manifest '(.plugins[] | select(.name == "sign-it") | .source.path) = "plugins/sign-it-old"'
+# The path rule refuses this before the tuple is compared; the tuple's path
+# component is exercised only with that rule disabled (mutation proof).
+expect_fail_reason "same-id path change rejected" "plugin sign-it git-subdir entry path must be plugins/sign-it" validate_against_base
+
+write_mixed_manifest
+mutate_manifest --arg url "$MONOREPO_URL" --arg sha "$PRO_SUBDIR_SHA" '(.plugins[] | select(.name == "pro-gate")) |= (.source = {source: "git-subdir", url: $url, path: "plugins/pro-gate", sha: $sha} | .metadata = {version: "2.1.0", releaseId: 21, releaseTag: "v2.1.0"})'
+expect_fail_reason "new-id shape change with a v-tag rejected" "plugin pro-gate metadata.releaseTag does not match metadata.version for a git-subdir entry" validate_against_base
+
+write_mixed_manifest
+mutate_manifest --arg url "$MONOREPO_URL" --arg sha "$PRO_SUBDIR_SHA" '(.plugins[] | select(.name == "pro-gate")) |= (.source = {source: "git-subdir", url: $url, path: "plugins/pro-gate-old", sha: $sha} | .metadata = {version: "2.1.0", releaseId: 21, releaseTag: "pro-gate--v2.1.0"})'
+expect_fail_reason "new-id shape change with the wrong path rejected" "plugin pro-gate git-subdir entry path must be plugins/pro-gate" validate_against_base
+
+write_mixed_manifest
+mutate_manifest --arg sha "$TOKEN_SHA" '(.plugins[] | select(.name == "sign-it")) |= (.source = {source: "url", url: "https://github.com/StartupBros-com/sign-it.git", sha: $sha} | .metadata = {version: "0.5.1", releaseId: 41, releaseTag: "v0.5.1"})'
+expect_fail_reason "git-subdir back to url rejected even with a new release id" "plugin sign-it cannot change shape from git-subdir back to url" validate_against_base
+
+# The validator reads no author: the same change fails identically whoever
+# opened the PR, bot or human.
+bot_twin_label="the same manifest change fails identically for a bot actor"
+back_switch_needle="plugin sign-it cannot change shape from git-subdir back to url"
+if human_verdict="$( (validate_against_base) 2>&1)"; then
+  printf 'not ok - %s: the human run passed\n' "$bot_twin_label" >&2
+  exit 1
+fi
+if bot_verdict="$( (GITHUB_ACTOR='hov-repin-bot[bot]' validate_against_base) 2>&1)"; then
+  printf 'not ok - %s: the bot run passed\n' "$bot_twin_label" >&2
+  exit 1
+fi
+if [[ "$human_verdict" == *"$back_switch_needle"* && "$bot_verdict" == *"$back_switch_needle"* && "$human_verdict" == "$bot_verdict" ]]; then
+  printf 'ok - %s\n' "$bot_twin_label"
+  pass_count=$((pass_count + 1))
+else
+  printf 'not ok - %s\n' "$bot_twin_label" >&2
+  printf '%s\n---\n%s\n' "$human_verdict" "$bot_verdict" >&2
+  exit 1
+fi
 
 printf '%d passing cases, %d expected failures\n' "$pass_count" "$fail_count"
