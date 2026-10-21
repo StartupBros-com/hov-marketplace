@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Tests for scripts/repin-land.sh.
+# Tests for release/scripts/repin-land.sh.
 #
 # Landing is the step that lets a bot change what every client installs, so the
 # properties worth proving are: it requests auto-merge only on the bot's own,
@@ -9,7 +9,7 @@ set -euo pipefail
 # reconciler's output; it never touches anyone else's PR; it closes only the
 # repin PRs a newer one or main superseded; and it is safe to run again.
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 PASS=0
@@ -88,7 +88,7 @@ printf '%s\n' "$BLOB" > "$FIX/blob"
 run_land() { # extra env as arguments
   : > "$CALLS"
   env PATH="$TMP/bin:$PATH" REPO=acme/market BOT_SLUG="$SLUG" "$@" \
-    bash "$ROOT/scripts/repin-land.sh" >"$TMP/out" 2>"$TMP/err"
+    bash "$ROOT/release/scripts/repin-land.sh" >"$TMP/out" 2>"$TMP/err"
 }
 
 # --- the reconciler's own PR is queued, and only the bot's older repin is closed -

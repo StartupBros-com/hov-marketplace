@@ -140,4 +140,4 @@ jobs:
         run: |
           source_sha="$(git rev-list -n 1 "refs/tags/$RELEASE_TAG")"
           export SOURCE_SHA="$source_sha"
-          ./trusted-workflow/scripts/tool-drop-announce.sh
+          ./trusted-workflow/release/scripts/tool-drop-announce.sh

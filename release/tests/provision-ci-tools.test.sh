@@ -4,8 +4,8 @@ set -euo pipefail
 # Offline boundary fixtures: require the real release URLs and checksum pins,
 # then verify fixture bytes with real sha256sum. This is not an upstream
 # authenticity test; real pinned downloads are validated separately.
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SCRIPT="${PROVISION_SCRIPT:-$ROOT/scripts/provision-ci-tools.sh}"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+SCRIPT="${PROVISION_SCRIPT:-$ROOT/release/scripts/provision-ci-tools.sh}"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/bin" "$TMP/assets/shellcheck-v0.11.0" "$TMP/ambient"

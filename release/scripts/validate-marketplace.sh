@@ -22,7 +22,7 @@ ANNOUNCE_WORKFLOW_PIN="${ANNOUNCE_WORKFLOW_PIN:-}"
 # Where to resolve announce-workflow pins. The manifest under validation can
 # live anywhere (fixtures use a temp repo), but pins are always commits of the
 # marketplace repo this script ships in.
-MARKETPLACE_REPO_DIR="${MARKETPLACE_REPO_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+MARKETPLACE_REPO_DIR="${MARKETPLACE_REPO_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 
 # A pin is blessed when it is a real commit in the marketplace repo's history
 # AND that commit carries the announce workflow. Both halves matter: ancestry

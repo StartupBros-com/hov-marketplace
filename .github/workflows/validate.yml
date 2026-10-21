@@ -20,45 +20,45 @@ jobs:
         with:
           fetch-depth: 0
       - name: Provision pinned CI tools
-        run: ./scripts/provision-ci-tools.sh
+        run: ./release/scripts/provision-ci-tools.sh
       - name: Lint Tool Drop announce scripts
         run: >-
-          shellcheck scripts/tool-drop-announce.sh
-          scripts/provision-ci-tools.sh
-          tests/provision-ci-tools.test.sh
-          scripts/repin-reconcile.sh
-          scripts/repin-land.sh
-          scripts/repin-publish.sh
-          scripts/announce-pin-roll.sh
-          tests/tool-drop-announce.test.sh
-          tests/tool-drop-announce-retry.test.sh
-          tests/notes-summary.test.sh
-          tests/repin-reconcile.test.sh
-          tests/repin-land.test.sh
-          tests/repin-publish.test.sh
-          tests/announce-pin-roll.test.sh
+          shellcheck release/scripts/tool-drop-announce.sh
+          release/scripts/provision-ci-tools.sh
+          release/tests/provision-ci-tools.test.sh
+          release/scripts/repin-reconcile.sh
+          release/scripts/repin-land.sh
+          release/scripts/repin-publish.sh
+          release/scripts/announce-pin-roll.sh
+          release/tests/tool-drop-announce.test.sh
+          release/tests/tool-drop-announce-retry.test.sh
+          release/tests/notes-summary.test.sh
+          release/tests/repin-reconcile.test.sh
+          release/tests/repin-land.test.sh
+          release/tests/repin-publish.test.sh
+          release/tests/announce-pin-roll.test.sh
       - name: Test pinned CI tool provisioning without network access
-        run: bash ./tests/provision-ci-tools.test.sh
+        run: bash ./release/tests/provision-ci-tools.test.sh
       - name: Validate marketplace without network access
         env:
           BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
-        run: ./scripts/validate-marketplace.sh syntax
+        run: ./release/scripts/validate-marketplace.sh syntax
       - name: Run marketplace fixture tests
-        run: ./tests/validate-marketplace.test.sh
+        run: ./release/tests/validate-marketplace.test.sh
       - name: Run Tool Drop announce security tests
-        run: ./tests/tool-drop-announce.test.sh
+        run: ./release/tests/tool-drop-announce.test.sh
       - name: Run announce retry tests
-        run: bash ./tests/tool-drop-announce-retry.test.sh
+        run: bash ./release/tests/tool-drop-announce-retry.test.sh
       - name: Run notes-summary tests
-        run: bash ./tests/notes-summary.test.sh
+        run: bash ./release/tests/notes-summary.test.sh
       - name: Run repin reconcile tests
-        run: bash ./tests/repin-reconcile.test.sh
+        run: bash ./release/tests/repin-reconcile.test.sh
       - name: Run repin land tests
-        run: bash ./tests/repin-land.test.sh
+        run: bash ./release/tests/repin-land.test.sh
       - name: Run repin publish tests
-        run: bash ./tests/repin-publish.test.sh
+        run: bash ./release/tests/repin-publish.test.sh
       - name: Run announce pin roll tests
-        run: bash ./tests/announce-pin-roll.test.sh
+        run: bash ./release/tests/announce-pin-roll.test.sh
 
   public-pr-syntax:
     name: Public PR data check
@@ -85,8 +85,8 @@ jobs:
         with:
           fetch-depth: 0
       - name: Provision pinned CI tools
-        run: ./scripts/provision-ci-tools.sh
+        run: ./release/scripts/provision-ci-tools.sh
       - name: Validate pinned source payloads
         env:
           BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
-        run: ./scripts/validate-marketplace.sh full
+        run: ./release/scripts/validate-marketplace.sh full

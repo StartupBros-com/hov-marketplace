@@ -12,7 +12,7 @@ set -euo pipefail
 # WHAT IT ENCODES
 #
 # Rolling this by hand on 2026-09-09 took two passes and produced four red PRs, because the
-# change is not "sed the sha". Each trap below is a case in tests/announce-pin-roll.test.sh:
+# change is not "sed the sha". Each trap below is a case in release/tests/announce-pin-roll.test.sh:
 #
 #   1. Two shas move, not one. The hardened slot takes the new pin AND the retired slot
 #      takes the pin just superseded, so the mutant that slot seeds still means "reverting

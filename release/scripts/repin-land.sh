@@ -17,8 +17,8 @@ set -euo pipefail
 # demand an up-to-date branch) or, rebased by hand, would pin an older release.
 #
 # Usage (from the reconcile workflow, with the marketplace bot's token):
-#   DESIRED_BRANCH=repin/auto-<key> EXPECTED_BLOB=<blob sha> scripts/repin-land.sh
-#   DESIRED_BRANCH= scripts/repin-land.sh   # no drift: close every open repin PR
+#   DESIRED_BRANCH=repin/auto-<key> EXPECTED_BLOB=<blob sha> release/scripts/repin-land.sh
+#   DESIRED_BRANCH= release/scripts/repin-land.sh   # no drift: close every open repin PR
 #
 # Env:
 #   REPO            owner/name of this repository (default: $GITHUB_REPOSITORY)

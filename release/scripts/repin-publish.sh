@@ -22,8 +22,8 @@ set -euo pipefail
 # (pro-gate's runtime tarball), and the reconciler may pin it inside that window.
 #
 # Usage:
-#   scripts/repin-publish.sh            # publish matching drafts
-#   DRY_RUN=1 scripts/repin-publish.sh  # report only
+#   release/scripts/repin-publish.sh            # publish matching drafts
+#   DRY_RUN=1 release/scripts/repin-publish.sh  # report only
 #
 # MANIFEST is this run's snapshot. Right before each publish the card is re-read
 # from live main: a newer repin, or a revert that holds a release back, may have

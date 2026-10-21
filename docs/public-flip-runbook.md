@@ -51,7 +51,7 @@ Completed on 2026-07-14 for token-eater and pro-gate using local bare Git remote
 Commands:
 
 ```bash
-bash tests/release-train.test.sh
+bash release/tests/release-train.test.sh
 ```
 
 Run once in each tool repository.

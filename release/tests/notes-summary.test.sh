@@ -3,12 +3,12 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(dirname "$HERE")"
+REPO_ROOT="$(dirname "$(dirname "$HERE")")"
 PASS=0
 FAIL=0
 export REPOSITORY="stub-plugin" RELEASE_TAG="v1.2.3"
 # shellcheck source=/dev/null
-source "$REPO_ROOT/scripts/tool-drop-announce.sh"
+source "$REPO_ROOT/release/scripts/tool-drop-announce.sh"
 
 report() {
   if [[ "$2" == 0 ]]; then
