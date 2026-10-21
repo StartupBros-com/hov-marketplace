@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Tests for scripts/repin-reconcile.sh.
+# Tests for release/scripts/repin-reconcile.sh.
 #
 # The reconciler's whole value is that it is safe to run repeatedly, so the two
 # properties worth proving are: it converges on the released state, and running
 # it again from that state does nothing at all — including no formatting churn,
 # which would otherwise rewrite every plugin's card and bury the real change.
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 PASS=0
@@ -66,7 +66,7 @@ make_manifest() { # $1 = version, $2 = tag, $3 = id, $4 = sha, $5 = dest
 
 run_reconcile() { # $1 = manifest path
   PATH="$TMP/bin:$PATH" FIX="$FIX" MANIFEST="$1" PLAN_FILE="$TMP/plan.tsv" \
-    bash "$ROOT/scripts/repin-reconcile.sh" 2>"$TMP/err"
+    bash "$ROOT/release/scripts/repin-reconcile.sh" 2>"$TMP/err"
 }
 
 # --- converges on the released state -----------------------------------------
@@ -108,7 +108,7 @@ pass 'a current manifest is untouched and leaves no plan file'
 make_manifest '1.0.0' 'v1.0.0' 800 "$OLD_SHA" "$TMP/dry.json"
 cp "$TMP/dry.json" "$TMP/dry.orig.json"
 PATH="$TMP/bin:$PATH" FIX="$FIX" MANIFEST="$TMP/dry.json" PLAN_FILE="$TMP/plan.tsv" DRY_RUN=1 \
-  bash "$ROOT/scripts/repin-reconcile.sh" >"$TMP/out4" 2>&1 || die 'dry run failed'
+  bash "$ROOT/release/scripts/repin-reconcile.sh" >"$TMP/out4" 2>&1 || die 'dry run failed'
 diff -q "$TMP/dry.orig.json" "$TMP/dry.json" >/dev/null || die 'dry run modified the manifest'
 grep -q 'dry run' "$TMP/out4" || die 'dry run did not say so'
 pass 'DRY_RUN reports drift without writing'

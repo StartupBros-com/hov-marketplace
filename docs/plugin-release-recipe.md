@@ -75,13 +75,13 @@ from pro-gate, generalized in hov-marketplace#118): `auto-release.yml`,
    `gh workflow run repin-reconcile.yml --repo StartupBros-com/hov-marketplace`.
    It opens the card PR (version, tag, releaseId, sha), and requests
    auto-merge on it once
-   `scripts/repin-land.sh` proves the PR changes only the manifest and
+   `release/scripts/repin-land.sh` proves the PR changes only the manifest and
    carries exactly the reconciler's output. GitHub merges it when both
    required checks pass; the validator resolves the tag to the pinned
    commit. The same run closes repin PRs the new one superseded. A card PR
    that also changes copy is a human PR and gets a normal review.
 5. The merge's push to `main` re-runs `repin-reconcile` (the scheduled run
-   is the backstop), and `scripts/repin-publish.sh` publishes the draft the
+   is the backstop), and `release/scripts/repin-publish.sh` publishes the draft the
    card now pins and marks it latest. It re-checks tag, version, commit, default-branch
    ancestry and that every asset finished uploading; while assets are still
    uploading it waits for the next scheduled run. Right before publishing it
@@ -196,7 +196,7 @@ resolution — issue #49).
 
 The reconciler repins identity only (`source.sha`, `metadata.version`,
 `releaseId`, `releaseTag`). Copy lives in the card and is edited by hand in a
-separate PR. `scripts/validate-marketplace.sh syntax` rejects the whole
+separate PR. `release/scripts/validate-marketplace.sh syntax` rejects the whole
 manifest as "invalid shape" (no field named) when a card breaks any of:
 
 - `card.rows`: exactly 3 strings, each 1-180 characters.

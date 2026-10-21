@@ -27,12 +27,12 @@ set -euo pipefail
 # point — writing this manifest from a plugin repo would need a standing
 # cross-repo credential, the one whose compromise reaches every installed client,
 # which is exactly why the repin was manual in the first place. This script only
-# edits the working tree; the workflow opens the PR, and scripts/repin-land.sh
+# edits the working tree; the workflow opens the PR, and release/scripts/repin-land.sh
 # queues it for auto-merge behind the same required checks a human merge needed.
 #
 # Usage:
-#   scripts/repin-reconcile.sh            # report drift, write PLAN_FILE
-#   DRY_RUN=1 scripts/repin-reconcile.sh  # report only, never write the manifest
+#   release/scripts/repin-reconcile.sh            # report drift, write PLAN_FILE
+#   DRY_RUN=1 release/scripts/repin-reconcile.sh  # report only, never write the manifest
 #
 # Env:
 #   MANIFEST     path to marketplace.json (default: .claude-plugin/marketplace.json)

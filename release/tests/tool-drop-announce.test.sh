@@ -4,9 +4,9 @@
 # shellcheck disable=SC2016,SC2034
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 WORKFLOW="$ROOT/.github/workflows/hov-tool-drop-announce.yml"
-HELPER="$ROOT/scripts/tool-drop-announce.sh"
+HELPER="$ROOT/release/scripts/tool-drop-announce.sh"
 FIXED_ENDPOINT='https://members.startupbros.com/api/internal/ops/tool-releases'
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -129,7 +129,7 @@ check_contract() {
   manifest_env="$(yq -r '.jobs.announce.steps[] | select(.name == "Announce release") | .env.MARKETPLACE_MANIFEST' "$workflow")" || return 1
   announce_env_count="$(yq -r '.jobs.announce.steps[] | select(.name == "Announce release") | .env | length' "$workflow")" || return 1
   expected_announce=$'source_sha="$(git rev-list -n 1 "refs/tags/$RELEASE_TAG")"\nexport SOURCE_SHA="$source_sha"\n'
-  expected_announce+="./$trusted_path/scripts/tool-drop-announce.sh"
+  expected_announce+="./$trusted_path/release/scripts/tool-drop-announce.sh"
   [[ "$announce_run" == "$expected_announce" ]] || return 1
   [[ "$announce_env_count" == 8 ]] || return 1
   [[ "$(yq -r '.jobs.announce.steps[] | select(.name == "Announce release") | .env.EVENT_ACTION' "$workflow")" == '${{ github.event.action }}' ]] || return 1
@@ -334,7 +334,7 @@ replace_once "$WORKFLOW" "$mutant" 'git merge-base --is-ancestor "$release_sha" 
 expect_contract_reject "release ancestry bypass" "$mutant" "$HELPER"
 
 mutant="$TMP/workflow-mutable-helper.yml"
-replace_once "$WORKFLOW" "$mutant" './trusted-workflow/scripts/tool-drop-announce.sh' './marketplace-data/scripts/tool-drop-announce.sh'
+replace_once "$WORKFLOW" "$mutant" './trusted-workflow/release/scripts/tool-drop-announce.sh' './marketplace-data/release/scripts/tool-drop-announce.sh'
 expect_contract_reject "mutable-main helper execution" "$mutant" "$HELPER"
 
 mutant="$TMP/helper-caller-url.sh"

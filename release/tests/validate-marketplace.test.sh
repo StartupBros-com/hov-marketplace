@@ -2,8 +2,8 @@
 # shellcheck disable=SC2016
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VALIDATOR="$ROOT/scripts/validate-marketplace.sh"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+VALIDATOR="$ROOT/release/scripts/validate-marketplace.sh"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 REMOTE_ROOT="$TMP/remotes"

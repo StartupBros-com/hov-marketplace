@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Tests for scripts/repin-publish.sh.
+# Tests for release/scripts/repin-publish.sh.
 #
 # The publish is the one step here that writes outside this repository, and it
 # fires an announcement, so the properties worth proving are: it publishes the
@@ -9,7 +9,7 @@ set -euo pipefail
 # they disagree or a read fails; it waits while assets are still uploading; and
 # one plugin's failure does not stop another plugin's publish.
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 PASS=0
@@ -100,7 +100,7 @@ run_publish() { # extra env as arguments
   : > "$CALLS"
   [ -e "$FIX/live.json" ] || cp "$TMP/m.json" "$FIX/live.json"
   env PATH="$TMP/bin:$PATH" MANIFEST="$TMP/m.json" MARKETPLACE_REPO=acme/market "$@" \
-    bash "$ROOT/scripts/repin-publish.sh" >"$TMP/out" 2>"$TMP/err"
+    bash "$ROOT/release/scripts/repin-publish.sh" >"$TMP/out" 2>"$TMP/err"
 }
 
 reset() { rm -rf "$FIX"; mkdir -p "$FIX"; }

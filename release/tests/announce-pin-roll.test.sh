@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-# Tests for scripts/announce-pin-roll.sh.
+# Tests for release/scripts/announce-pin-roll.sh.
 #
 # Every case below is a mistake that actually shipped, was caught in CI rather than
 # locally, or was found by an adversarial pass over the first draft of this script.
@@ -12,7 +12,7 @@ set -uo pipefail
 # the new sha for an unrelated reason. Deciding what to touch belongs to roll_candidates,
 # which selects on the repository's actual pin, and that is where those cases are proven.
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 PASS=0
@@ -22,7 +22,7 @@ die() { printf 'not ok - %s\n' "$1" >&2; FAIL=$((FAIL + 1)); }
 
 # Sourcing must not run the driver, or every test would trip the usage guard.
 # shellcheck source=/dev/null
-source "$ROOT/scripts/announce-pin-roll.sh"
+source "$ROOT/release/scripts/announce-pin-roll.sh"
 # The sourced script sets -e for its own run. Left on, the first bare call below that
 # returned nonzero would abort this file mid-suite and lose every later result and the
 # tally. Restore the runner's own flags.

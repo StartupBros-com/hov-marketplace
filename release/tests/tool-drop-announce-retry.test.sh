@@ -5,7 +5,7 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(dirname "$HERE")"
+REPO_ROOT="$(dirname "$(dirname "$HERE")")"
 PASS=0
 FAIL=0
 
@@ -28,7 +28,7 @@ setup() {
   export REPOSITORY="stub-repo" RELEASE_ID="1"
   export CURRENT_RELEASE_NOTES=""
   # shellcheck source=/dev/null
-  source "$REPO_ROOT/scripts/tool-drop-announce.sh"
+  source "$REPO_ROOT/release/scripts/tool-drop-announce.sh"
 
   mint_oidc_token() {
     printf '%s\n' "$1" >>"$STUB_AUDIENCES"
