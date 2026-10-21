@@ -298,7 +298,7 @@ announce() {
   notes="$(notes_summary)"
   request_body="$(jq -cn \
     --arg operation announce \
-    --arg repository "$REPOSITORY" \
+    --arg repository "$PLUGIN_NAME" \
     --arg releaseId "$RELEASE_ID" \
     --arg notesSummary "$notes" \
     '{operation: $operation, repository: $repository, releaseId: $releaseId} + (if $notesSummary == "" then {} else {notesSummary: $notesSummary} end)')"
@@ -355,13 +355,46 @@ announce() {
   return "$result"
 }
 
+# Derive the plugin identity from the release tag, once, before the release is
+# verified. A tag carrying "--v" is a monorepo release: the text before its LAST
+# "--v" is the plugin name and the plugin lives under plugins/<name>/. A plain
+# v<version> tag is a per-plugin repository: the plugin is the repository and
+# lives at the source root. The request body's repository field carries the
+# plugin name, because the announce endpoint looks the marketplace entry up by
+# that name; REPOSITORY stays the GitHub repository name for the workflow's
+# concurrency group and the retry jitter seed. Splitting with "%--v*" (shortest
+# suffix removal) lands on the last separator by definition, so a prefix that
+# still contains "--" is a name the marketplace refuses, not a second split.
+# The text after that separator must start with a digit, so a tag such as
+# foo--vbar is refused here with the rule named, not by a later mismatch.
+derive_plugin_identity() {
+  require REPOSITORY
+  require RELEASE_TAG
+  if [[ "$RELEASE_TAG" == *--v* ]]; then
+    PLUGIN_NAME="${RELEASE_TAG%--v*}"
+    [[ "$PLUGIN_NAME" != *--* ]] || fail "plugin name derived from release tag $RELEASE_TAG contains --, the release tag separator: $PLUGIN_NAME"
+    [[ "$PLUGIN_NAME" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] || fail "plugin name derived from release tag $RELEASE_TAG has an invalid shape: $PLUGIN_NAME"
+    [[ "${RELEASE_TAG##*--v}" == [0-9]* ]] || fail "release tag $RELEASE_TAG has no version after its last --v"
+    PLUGIN_DIR="plugins/$PLUGIN_NAME"
+    TAG_PREFIX="$PLUGIN_NAME--"
+  else
+    PLUGIN_NAME="$REPOSITORY"
+    PLUGIN_DIR=''
+    TAG_PREFIX=''
+  fi
+}
+
 verify_release() {
   require SOURCE_ROOT
   require SOURCE_SHA
-  local version manifest_version expected_tag
-  version="$(tr -d '[:space:]' < "$SOURCE_ROOT/VERSION")"
-  manifest_version="$(jq -er '.version' "$SOURCE_ROOT/.claude-plugin/plugin.json")"
-  expected_tag="v$version"
+  require PLUGIN_NAME
+  local plugin_root version manifest_version expected_tag
+  plugin_root="$SOURCE_ROOT${PLUGIN_DIR:+/$PLUGIN_DIR}"
+  [[ -f "$plugin_root/VERSION" ]] || fail "no VERSION file at $plugin_root for release tag $RELEASE_TAG"
+  [[ -f "$plugin_root/.claude-plugin/plugin.json" ]] || fail "no plugin manifest at $plugin_root for release tag $RELEASE_TAG"
+  version="$(tr -d '[:space:]' < "$plugin_root/VERSION")"
+  manifest_version="$(jq -er '.version' "$plugin_root/.claude-plugin/plugin.json")"
+  expected_tag="${TAG_PREFIX}v$version"
   [[ "$RELEASE_TAG" == "$expected_tag" ]] || fail "release tag $RELEASE_TAG does not match VERSION $version"
   [[ "$manifest_version" == "$version" ]] || fail "plugin manifest version $manifest_version does not match VERSION $version"
   [[ "$(git -C "$SOURCE_ROOT" rev-parse HEAD)" == "$SOURCE_SHA" ]] || fail "checked-out source does not match release commit"
@@ -372,7 +405,7 @@ verify_release() {
 marketplace_lists_release() {
   require MARKETPLACE_MANIFEST
   jq -e \
-    --arg name "$REPOSITORY" \
+    --arg name "$PLUGIN_NAME" \
     --arg sha "$SOURCE_SHA" \
     --arg version "$RELEASE_VERSION" \
     --argjson release_id "$RELEASE_ID" \
@@ -383,7 +416,7 @@ marketplace_lists_release() {
 
 marketplace_has_card() {
   jq -e \
-    --arg name "$REPOSITORY" \
+    --arg name "$PLUGIN_NAME" \
     --arg sha "$SOURCE_SHA" \
     --arg version "$RELEASE_VERSION" \
     --argjson release_id "$RELEASE_ID" \
@@ -400,8 +433,8 @@ marketplace_has_card() {
 report_not_announced() {
   local reason="$1" message="$2"
   printf '::error title=Not announced::%s\n' "$message"
-  printf 'hov-drop-announce: status=not-announced reason=%s repository=%s tag=%s\n' \
-    "$reason" "${REPOSITORY:-?}" "${RELEASE_TAG:-?}"
+  printf 'hov-drop-announce: status=not-announced reason=%s repository=%s tag=%s plugin=%s\n' \
+    "$reason" "${REPOSITORY:-?}" "${RELEASE_TAG:-?}" "${PLUGIN_NAME:-?}"
   if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
     {
       printf '### Not announced (%s)\n\n' "$reason"
@@ -434,6 +467,7 @@ main() {
     return
   fi
 
+  derive_plugin_identity
   RELEASE_VERSION="$(verify_release)"
 
   if ! marketplace_lists_release; then
@@ -446,13 +480,13 @@ main() {
     # their normal flow red. Once every plugin stages draft-first (so the card
     # is always current at publish), this should become a hard failure.
     report_not_announced 'not-listed' \
-      "hov-marketplace does not yet list $REPOSITORY $RELEASE_TAG at $SOURCE_SHA. Merge the repin PR, then edit the release to re-fire the announce."
+      "hov-marketplace does not yet list $PLUGIN_NAME $RELEASE_TAG at $SOURCE_SHA. Merge the repin PR, then edit the release to re-fire the announce."
     return
   fi
 
   if ! marketplace_has_card; then
     report_not_announced 'no-card' \
-      "$REPOSITORY has no card block in hov-marketplace. Add one (card: {rows, run}) in a marketplace PR, then edit the release to re-fire."
+      "$PLUGIN_NAME has no card block in hov-marketplace. Add one (card: {rows, run}) in a marketplace PR, then edit the release to re-fire."
     return
   fi
 

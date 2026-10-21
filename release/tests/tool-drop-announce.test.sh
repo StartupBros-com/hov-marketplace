@@ -146,6 +146,34 @@ check_contract() {
   grep -Fq 'readonly request_body' "$helper" || return 1
   [[ "$({ grep -Fo -- '--arg releaseId "$RELEASE_ID"' "$helper" || true; } | wc -l)" == 1 ]] || return 1
   grep -Fq '{operation: $operation, repository: $repository, releaseId: $releaseId} + (if $notesSummary == "" then {} else {notesSummary: $notesSummary} end)' "$helper" || return 1
+  # The body's repository field and both manifest predicates use the plugin name
+  # derived from the tag, never the GitHub repository name. The derivation splits
+  # on the LAST "--v", refuses a name that still carries the separator, reads
+  # VERSION and the plugin manifest from the derived directory, and expects the
+  # tag under the derived prefix. Each pin is one mutant in the harness below.
+  grep -Fq -- '--arg repository "$PLUGIN_NAME"' "$helper" || return 1
+  ! grep -Fq -- '--arg repository "$REPOSITORY"' "$helper" || return 1
+  [[ "$({ grep -Fo -- '--arg name "$PLUGIN_NAME"' "$helper" || true; } | wc -l)" == 2 ]] || return 1
+  ! grep -Fq -- '--arg name "$REPOSITORY"' "$helper" || return 1
+  grep -Fq 'PLUGIN_NAME="${RELEASE_TAG%--v*}"' "$helper" || return 1
+  grep -Fq '[[ "$PLUGIN_NAME" != *--* ]] || fail' "$helper" || return 1
+  grep -Fq 'plugin_root="$SOURCE_ROOT${PLUGIN_DIR:+/$PLUGIN_DIR}"' "$helper" || return 1
+  grep -Fq 'expected_tag="${TAG_PREFIX}v$version"' "$helper" || return 1
+  grep -Fq '[[ "$PLUGIN_NAME" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] || fail' "$helper" || return 1
+  grep -Fq '[[ "${RELEASE_TAG##*--v}" == [0-9]* ]] || fail' "$helper" || return 1
+  grep -Fq 'PLUGIN_DIR="plugins/$PLUGIN_NAME"' "$helper" || return 1
+  grep -Fq 'TAG_PREFIX="$PLUGIN_NAME--"' "$helper" || return 1
+  grep -Fq '[[ -f "$plugin_root/VERSION" ]] || fail' "$helper" || return 1
+  # Derivation is called once, after the latest-stable no-op and immediately
+  # before release verification, so a draft or non-latest release with a
+  # malformed tag stays a no-op instead of failing.
+  local noop_line derive_line verify_line
+  noop_line="$(grep -n -F 'is not latest stable %s; no-op' "$helper" | cut -d: -f1)"
+  derive_line="$(grep -n -x -F '  derive_plugin_identity' "$helper" | cut -d: -f1)"
+  verify_line="$(grep -n -F 'RELEASE_VERSION="$(verify_release)"' "$helper" | cut -d: -f1)"
+  [[ -n "$noop_line" && -n "$derive_line" && -n "$verify_line" ]] || return 1
+  [[ "$noop_line" != *$'\n'* && "$derive_line" != *$'\n'* && "$verify_line" != *$'\n'* ]] || return 1
+  (( noop_line < derive_line && derive_line + 1 == verify_line )) || return 1
   grep -Fq 'local -r request_body="$1" expected_sha="$2" oidc_token="$3"' "$helper" || return 1
   grep -Fq 'request_sha="$(sha256_bytes "$request_body")"' "$helper" || return 1
   grep -Fq 'audience="${TOOL_RELEASES_ENDPOINT}#sha256=$request_sha"' "$helper" || return 1
@@ -504,6 +532,11 @@ SLEEP_DELAYS_FILE="$TMP/sleep-delays"
 RESPONSE_PATHS_FILE="$TMP/response-paths"
 OIDC_URL='https://token.actions.test/oidc?api-version=fixture'
 ORIGINAL_PATH="$PATH"
+# run_helper's release identity. Every existing case uses the per-plugin fixture;
+# the monorepo cases at the end override these through dynamic scope.
+RUN_REPOSITORY="$FIXTURE_REPOSITORY"
+RUN_TAG="$FIXTURE_TAG"
+RUN_SOURCE_ROOT="$SOURCE_ROOT"
 readonly FAKE_MAX_ATTEMPTS=8
 mkdir -p "$SOURCE_ROOT/.claude-plugin" "$FAKE_BIN"
 
@@ -741,15 +774,15 @@ run_helper() {
   env \
     PATH="$FAKE_BIN:$ORIGINAL_PATH" \
     EVENT_ACTION="$event_action" \
-    REPOSITORY="$FIXTURE_REPOSITORY" \
+    REPOSITORY="$RUN_REPOSITORY" \
     RELEASE_ID="$release_id" \
-    RELEASE_TAG="$FIXTURE_TAG" \
+    RELEASE_TAG="$RUN_TAG" \
     CURRENT_RELEASE_FILE="$current_release_file" \
     RELEASE_NOTES="$HYPOTHETICAL_EVENT_NOTES" \
     RELEASE_PRERELEASE=true \
     RELEASE_DRAFT=true \
     LATEST_STABLE_ID="$latest_id" \
-    SOURCE_ROOT="$SOURCE_ROOT" \
+    SOURCE_ROOT="$RUN_SOURCE_ROOT" \
     SOURCE_SHA="$source_sha" \
     MARKETPLACE_MANIFEST="$manifest" \
     ACTIONS_ID_TOKEN_REQUEST_URL="$OIDC_URL" \
@@ -1218,5 +1251,305 @@ mapfile -t mutation_calls <"$CALLS_FILE"
 [[ ${#mutation_calls[@]} -eq 1 && "${mutation_calls[0]}" == mint ]] || die "post-mint body mutation reached the endpoint"
 grep -Fq 'request body changed after OIDC mint' "$TMP/run-output" || die "post-mint body mutation did not hit the digest guard"
 pass "post-mint body alteration is rejected before POST"
+
+# --- Monorepo releases on <name>--v<version> tags -----------------------------
+# One repository hosts several plugins under plugins/<name>/ and releases each on
+# a <name>--v<version> tag. REPOSITORY stays the repository name (the workflow's
+# concurrency group and the retry jitter seed); the helper derives the plugin
+# name and directory from the tag, verifies the release against that directory,
+# matches the marketplace entry by plugin name and sends the plugin name in the
+# request body. The monorepo root deliberately has no VERSION and no plugin
+# manifest, so a root read cannot pass by accident.
+MONOREPO_REPOSITORY='fixture-monorepo'
+MONOREPO="$TMP/monorepo"
+MONO_MANIFEST="$TMP/monorepo-marketplace.json"
+PRO_GATE_VERSION='0.66.0'
+HOVSTACK_VERSION='0.1.0'
+PLANTED_VERSION='1.0.0'
+PRO_GATE_RELEASE_ID='7'
+HOVSTACK_RELEASE_ID='8'
+PLANTED_RELEASE_ID='9'
+BADSHAPE_VERSION='2.0.0'
+BADSHAPE_RELEASE_ID='10'
+write_monorepo_plugin() {
+  local name="$1" version="$2"
+  mkdir -p "$MONOREPO/plugins/$name/.claude-plugin"
+  printf '%s\n' "$version" >"$MONOREPO/plugins/$name/VERSION"
+  jq -n --arg name "$name" --arg version "$version" \
+    '{name: $name, version: $version}' >"$MONOREPO/plugins/$name/.claude-plugin/plugin.json"
+}
+write_monorepo_plugin pro-gate "$PRO_GATE_VERSION"
+write_monorepo_plugin hovstack "$HOVSTACK_VERSION"
+# Planted: a directory whose name carries the tag separator, complete with a
+# VERSION, a plugin manifest, a tag and (below) a carded marketplace entry, so
+# the name rule is the only thing between it and an announce.
+write_monorepo_plugin x--v1 "$PLANTED_VERSION"
+# Planted: a name the endpoint's shape rule refuses (an underscore), likewise
+# complete, so the shape rule is the only thing between it and an announce.
+write_monorepo_plugin pro_gate "$BADSHAPE_VERSION"
+git -C "$MONOREPO" init -q
+git -C "$MONOREPO" config user.name Fixture
+git -C "$MONOREPO" config user.email fixture@example.com
+git -C "$MONOREPO" add plugins
+git -C "$MONOREPO" commit -qm 'monorepo fixture'
+git -C "$MONOREPO" tag "pro-gate--v$PRO_GATE_VERSION"
+git -C "$MONOREPO" tag "hovstack--v$HOVSTACK_VERSION"
+git -C "$MONOREPO" tag "x--v1--v$PLANTED_VERSION"
+git -C "$MONOREPO" tag "pro_gate--v$BADSHAPE_VERSION"
+# The same commit under a tag whose version disagrees with plugins/pro-gate/VERSION.
+git -C "$MONOREPO" tag 'pro-gate--v0.67.0'
+MONOREPO_SHA="$(git -C "$MONOREPO" rev-parse HEAD)"
+jq -n \
+  --arg sha "$MONOREPO_SHA" \
+  --arg pro_gate_version "$PRO_GATE_VERSION" --argjson pro_gate_release_id "$PRO_GATE_RELEASE_ID" \
+  --arg hovstack_version "$HOVSTACK_VERSION" --argjson hovstack_release_id "$HOVSTACK_RELEASE_ID" \
+  --arg planted_version "$PLANTED_VERSION" --argjson planted_release_id "$PLANTED_RELEASE_ID" \
+  --arg badshape_version "$BADSHAPE_VERSION" --argjson badshape_release_id "$BADSHAPE_RELEASE_ID" \
+  'def entry($name; $version; $release_id):
+     {name: $name,
+      source: {source: "git-subdir", url: "https://github.com/fixture-owner/fixture-monorepo.git", path: ("plugins/" + $name), sha: $sha},
+      metadata: {version: $version, releaseId: $release_id, releaseTag: ($name + "--v" + $version)},
+      card: {rows: ["one", "two", "three"], run: "Run it"}};
+   {plugins: [
+     entry("pro-gate"; $pro_gate_version; $pro_gate_release_id),
+     entry("hovstack"; $hovstack_version; $hovstack_release_id),
+     entry("x--v1"; $planted_version; $planted_release_id),
+     entry("pro_gate"; $badshape_version; $badshape_release_id)
+   ]}' >"$MONO_MANIFEST"
+
+# Runs the helper as the monorepo's release workflow would: REPOSITORY is the
+# repository, the tag selects the plugin. Dynamic scope hands the overrides to
+# run_helper and restores the per-plugin fixture on return. reset_capture
+# rewrites the current-release file for the per-plugin fixture, so the
+# monorepo release is written after it. The optional draft, prerelease and
+# latest-stable id arguments reach the helper's no-op branches.
+run_monorepo() {
+  local helper="$1" tag="$2" release_id="$3" manifest="$4"
+  local draft="${5:-false}" prerelease="${6:-false}" latest_id="${7:-$3}"
+  local RUN_REPOSITORY="$MONOREPO_REPOSITORY" RUN_TAG="$tag" RUN_SOURCE_ROOT="$MONOREPO"
+  reset_capture
+  write_current_release "$release_id" "$tag" "$VALID_NOTES" "$draft" "$prerelease"
+  run_helper "$helper" "$manifest" "$release_id" "$latest_id" "$MONOREPO_SHA" "$CURRENT_RELEASE_FILE" published >"$TMP/run-output" 2>&1
+}
+
+PRO_GATE_BODY='{"operation":"announce","repository":"pro-gate","releaseId":"7","notesSummary":"First safe improvement\nSecond exact detail"}'
+HOVSTACK_BODY='{"operation":"announce","repository":"hovstack","releaseId":"8","notesSummary":"First safe improvement\nSecond exact detail"}'
+PLANTED_REFUSAL='contains --, the release tag separator: x--v1'
+PLANTED_BODY='{"operation":"announce","repository":"x--v1","releaseId":"9","notesSummary":"First safe improvement\nSecond exact detail"}'
+BADSHAPE_BODY='{"operation":"announce","repository":"pro_gate","releaseId":"10","notesSummary":"First safe improvement\nSecond exact detail"}'
+BADSHAPE_REFUSAL='has an invalid shape: pro_gate'
+
+if ! run_monorepo "$HELPER" "pro-gate--v$PRO_GATE_VERSION" "$PRO_GATE_RELEASE_ID" "$MONO_MANIFEST"; then
+  command cat "$TMP/run-output" >&2
+  die "monorepo pro-gate fixture"
+fi
+assert_one_bound_request '["notesSummary","operation","releaseId","repository"]'
+[[ "$(<"$BODY_FILE")" == "$PRO_GATE_BODY" ]] || die "monorepo request body did not carry the plugin name pro-gate"
+pass "pro-gate--v$PRO_GATE_VERSION on the monorepo verifies plugins/pro-gate/VERSION and sends repository=pro-gate while REPOSITORY is $MONOREPO_REPOSITORY"
+
+if ! run_monorepo "$HELPER" "hovstack--v$HOVSTACK_VERSION" "$HOVSTACK_RELEASE_ID" "$MONO_MANIFEST"; then
+  command cat "$TMP/run-output" >&2
+  die "monorepo hovstack fixture"
+fi
+assert_one_bound_request '["notesSummary","operation","releaseId","repository"]'
+[[ "$(<"$BODY_FILE")" == "$HOVSTACK_BODY" ]] || die "monorepo request body did not carry the skill pack name hovstack"
+pass "hovstack--v$HOVSTACK_VERSION on the monorepo names the skill pack from plugins/hovstack/VERSION"
+
+if run_monorepo "$HELPER" 'pro-gate--v0.67.0' "$PRO_GATE_RELEASE_ID" "$MONO_MANIFEST"; then
+  die "a prefixed tag whose version disagrees with plugins/pro-gate/VERSION unexpectedly succeeded"
+fi
+[[ ! -s "$CALLS_FILE" ]] || die "version disagreement minted or sent a request"
+grep -Fq "release tag pro-gate--v0.67.0 does not match VERSION $PRO_GATE_VERSION" "$TMP/run-output" \
+  || die "version disagreement did not name the version read from plugins/pro-gate/VERSION"
+pass "a prefixed tag whose version disagrees with the plugin directory's VERSION fails before mint, naming that VERSION"
+
+if run_monorepo "$HELPER" "x--v1--v$PLANTED_VERSION" "$PLANTED_RELEASE_ID" "$MONO_MANIFEST"; then
+  die "the planted x--v1 directory was announced"
+fi
+[[ ! -s "$CALLS_FILE" ]] || die "the planted x--v1 directory minted or sent a request"
+grep -Fq "$PLANTED_REFUSAL" "$TMP/run-output" || die "the planted x--v1 directory was not refused by name"
+pass "x--v1--v$PLANTED_VERSION is refused as a plugin name although plugins/x--v1 and its carded entry exist"
+
+if run_monorepo "$HELPER" "pro_gate--v$BADSHAPE_VERSION" "$BADSHAPE_RELEASE_ID" "$MONO_MANIFEST"; then
+  die "the planted pro_gate directory was announced"
+fi
+[[ ! -s "$CALLS_FILE" ]] || die "the planted pro_gate directory minted or sent a request"
+grep -Fq "plugin name derived from release tag pro_gate--v$BADSHAPE_VERSION $BADSHAPE_REFUSAL" "$TMP/run-output" \
+  || die "the planted pro_gate directory was not refused by the shape rule"
+pass "pro_gate--v$BADSHAPE_VERSION is refused by the endpoint's name shape although plugins/pro_gate and its carded entry exist"
+
+if run_monorepo "$HELPER" '--v1.0.0' "$PRO_GATE_RELEASE_ID" "$MONO_MANIFEST"; then
+  die "a tag with nothing before its separator was announced"
+fi
+[[ ! -s "$CALLS_FILE" ]] || die "a tag with nothing before its separator minted or sent a request"
+grep -Fq 'plugin name derived from release tag --v1.0.0 has an invalid shape' "$TMP/run-output" \
+  || die "a tag with nothing before its separator was not refused by the shape rule"
+pass "--v1.0.0 derives an empty name and is refused by the shape rule before mint"
+
+if run_monorepo "$HELPER" 'pro-gate--vnext' "$PRO_GATE_RELEASE_ID" "$MONO_MANIFEST"; then
+  die "a prefixed tag with no version after its separator was announced"
+fi
+[[ ! -s "$CALLS_FILE" ]] || die "a prefixed tag with no version after its separator minted or sent a request"
+grep -Fq 'release tag pro-gate--vnext has no version after its last --v' "$TMP/run-output" \
+  || die "a prefixed tag with no version after its separator was not refused by name"
+pass "pro-gate--vnext is refused before mint because nothing numeric follows its last --v"
+
+if run_monorepo "$HELPER" "pro-gates--v$PRO_GATE_VERSION" "$PRO_GATE_RELEASE_ID" "$MONO_MANIFEST"; then
+  die "a tag naming a plugin directory that does not exist was announced"
+fi
+[[ ! -s "$CALLS_FILE" ]] || die "a tag naming a missing plugin directory minted or sent a request"
+grep -Fq "no VERSION file at $MONOREPO/plugins/pro-gates for release tag pro-gates--v$PRO_GATE_VERSION" "$TMP/run-output" \
+  || die "a tag naming a missing plugin directory did not fail with the directory named"
+pass "pro-gates--v$PRO_GATE_VERSION fails before mint naming the missing plugins/pro-gates/VERSION"
+
+if ! run_monorepo "$HELPER" "x--v1--v$PLANTED_VERSION" "$PLANTED_RELEASE_ID" "$MONO_MANIFEST" true false; then
+  command cat "$TMP/run-output" >&2
+  die "a draft release with the planted tag did not stay a no-op"
+fi
+[[ ! -s "$CALLS_FILE" ]] || die "a draft release with the planted tag minted or sent a request"
+grep -Fq 'prerelease or draft release ignored' "$TMP/run-output" || die "a draft release with the planted tag was not reported as ignored"
+! grep -Fq "$PLANTED_REFUSAL" "$TMP/run-output" || die "a draft release with the planted tag was refused as a plugin name"
+pass "a draft release tagged x--v1--v$PLANTED_VERSION is ignored before the name is derived"
+
+if ! run_monorepo "$HELPER" "x--v1--v$PLANTED_VERSION" "$PLANTED_RELEASE_ID" "$MONO_MANIFEST" false false "$PRO_GATE_RELEASE_ID"; then
+  command cat "$TMP/run-output" >&2
+  die "a non-latest release with the planted tag did not stay a no-op"
+fi
+[[ ! -s "$CALLS_FILE" ]] || die "a non-latest release with the planted tag minted or sent a request"
+grep -Fq "release $PLANTED_RELEASE_ID is not latest stable $PRO_GATE_RELEASE_ID; no-op" "$TMP/run-output" \
+  || die "a non-latest release with the planted tag was not reported as a no-op"
+! grep -Fq "$PLANTED_REFUSAL" "$TMP/run-output" || die "a non-latest release with the planted tag was refused as a plugin name"
+pass "a non-latest release tagged x--v1--v$PLANTED_VERSION is a no-op before the name is derived"
+
+jq '(.plugins[] | select(.name == "pro-gate") | .name) = "fixture-monorepo"' "$MONO_MANIFEST" >"$TMP/monorepo-by-repository-name.json"
+if ! run_monorepo "$HELPER" "pro-gate--v$PRO_GATE_VERSION" "$PRO_GATE_RELEASE_ID" "$TMP/monorepo-by-repository-name.json"; then
+  command cat "$TMP/run-output" >&2
+  die "monorepo entry under the repository name"
+fi
+[[ ! -s "$CALLS_FILE" ]] || die "an entry listed under the repository name minted or sent a request"
+grep -Fq "status=not-announced reason=not-listed repository=$MONOREPO_REPOSITORY tag=pro-gate--v$PRO_GATE_VERSION plugin=pro-gate" "$TMP/run-output" \
+  || die "an entry listed under the repository name was not reported as not-listed with both names"
+pass "an entry listed under the repository name instead of the plugin name is not-listed, and the marker carries both names"
+
+# Each mutant disables one derivation rule in a copy of the helper. The static
+# contract must reject the copy, and the monorepo case it targets must change
+# against it in the way the rule's removal predicts: an announce case no longer
+# produces the exact body; a refusal case either announces the planted
+# directory with the exact body, or fails later for a named different reason
+# with nothing minted.
+expect_mutant_breaks_announce() {
+  local label="$1" old="$2" new="$3" tag="$4" release_id="$5" expected_body="$6"
+  local mutant="$TMP/helper-$label.sh"
+  replace_once "$HELPER" "$mutant" "$old" "$new"
+  chmod +x "$mutant"
+  expect_contract_reject "$label" "$WORKFLOW" "$mutant"
+  if run_monorepo "$mutant" "$tag" "$release_id" "$MONO_MANIFEST" && [[ -s "$BODY_FILE" && "$(<"$BODY_FILE")" == "$expected_body" ]]; then
+    die "$label mutant still announced the exact monorepo body for $tag"
+  fi
+  pass "$label mutant no longer announces $tag with the exact body"
+}
+
+# The guard that refuses a planted directory is removed; the planted case must
+# then announce with the exact body, which proves that the guard alone refuses
+# it and that nothing downstream would catch it.
+expect_mutant_announces() {
+  local label="$1" old="$2" new="$3" tag="$4" release_id="$5" expected_body="$6"
+  local mutant="$TMP/helper-$label.sh"
+  replace_once "$HELPER" "$mutant" "$old" "$new"
+  chmod +x "$mutant"
+  expect_contract_reject "$label" "$WORKFLOW" "$mutant"
+  if ! run_monorepo "$mutant" "$tag" "$release_id" "$MONO_MANIFEST"; then
+    command cat "$TMP/run-output" >&2
+    die "$label mutant did not announce $tag"
+  fi
+  assert_one_bound_request '["notesSummary","operation","releaseId","repository"]'
+  [[ "$(<"$BODY_FILE")" == "$expected_body" ]] || die "$label mutant announced $tag with an unexpected body"
+  pass "$label mutant announces $tag with the exact body, so that rule alone refuses it"
+}
+
+# The rule is removed and the case still fails, but later and for a different
+# reason: the named reason must be absent, the other reason present and nothing
+# minted, so a weaker rule cannot hide behind a later failure.
+expect_mutant_fails_elsewhere() {
+  local label="$1" old="$2" new="$3" tag="$4" release_id="$5" named_reason="$6" other_reason="$7"
+  local mutant="$TMP/helper-$label.sh"
+  replace_once "$HELPER" "$mutant" "$old" "$new"
+  chmod +x "$mutant"
+  expect_contract_reject "$label" "$WORKFLOW" "$mutant"
+  if run_monorepo "$mutant" "$tag" "$release_id" "$MONO_MANIFEST"; then
+    die "$label mutant announced $tag"
+  fi
+  [[ ! -s "$CALLS_FILE" ]] || die "$label mutant minted or sent a request for $tag"
+  ! grep -Fq "$named_reason" "$TMP/run-output" || die "$label mutant still refused $tag for the named reason"
+  grep -Fq "$other_reason" "$TMP/run-output" || die "$label mutant did not fail $tag for the expected other reason"
+  pass "$label mutant fails $tag later and for a different reason, so the named rule is what refuses it"
+}
+
+expect_mutant_breaks_announce body-on-repository-name \
+  '    --arg repository "$PLUGIN_NAME" \' \
+  '    --arg repository "$REPOSITORY" \' \
+  "pro-gate--v$PRO_GATE_VERSION" "$PRO_GATE_RELEASE_ID" "$PRO_GATE_BODY"
+expect_mutant_breaks_announce listed-on-repository-name \
+  $'  require MARKETPLACE_MANIFEST\n  jq -e \\\n    --arg name "$PLUGIN_NAME" \\' \
+  $'  require MARKETPLACE_MANIFEST\n  jq -e \\\n    --arg name "$REPOSITORY" \\' \
+  "pro-gate--v$PRO_GATE_VERSION" "$PRO_GATE_RELEASE_ID" "$PRO_GATE_BODY"
+expect_mutant_breaks_announce root-version-read \
+  'plugin_root="$SOURCE_ROOT${PLUGIN_DIR:+/$PLUGIN_DIR}"' \
+  'plugin_root="$SOURCE_ROOT"' \
+  "pro-gate--v$PRO_GATE_VERSION" "$PRO_GATE_RELEASE_ID" "$PRO_GATE_BODY"
+expect_mutant_breaks_announce unprefixed-expected-tag \
+  'expected_tag="${TAG_PREFIX}v$version"' \
+  'expected_tag="v$version"' \
+  "pro-gate--v$PRO_GATE_VERSION" "$PRO_GATE_RELEASE_ID" "$PRO_GATE_BODY"
+expect_mutant_breaks_announce plugin-dir-on-repository-name \
+  '    PLUGIN_DIR="plugins/$PLUGIN_NAME"' \
+  '    PLUGIN_DIR="plugins/$REPOSITORY"' \
+  "pro-gate--v$PRO_GATE_VERSION" "$PRO_GATE_RELEASE_ID" "$PRO_GATE_BODY"
+expect_mutant_breaks_announce empty-tag-prefix \
+  '    TAG_PREFIX="$PLUGIN_NAME--"' \
+  '    TAG_PREFIX=""' \
+  "pro-gate--v$PRO_GATE_VERSION" "$PRO_GATE_RELEASE_ID" "$PRO_GATE_BODY"
+expect_mutant_announces double-hyphen-name-allowed \
+  '    [[ "$PLUGIN_NAME" != *--* ]] || fail "plugin name derived from release tag $RELEASE_TAG contains --, the release tag separator: $PLUGIN_NAME"' \
+  '    true' \
+  "x--v1--v$PLANTED_VERSION" "$PLANTED_RELEASE_ID" "$PLANTED_BODY"
+expect_mutant_announces shape-rule-removed \
+  '    [[ "$PLUGIN_NAME" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] || fail "plugin name derived from release tag $RELEASE_TAG has an invalid shape: $PLUGIN_NAME"' \
+  '    true' \
+  "pro_gate--v$BADSHAPE_VERSION" "$BADSHAPE_RELEASE_ID" "$BADSHAPE_BODY"
+expect_mutant_fails_elsewhere split-on-first-separator \
+  'PLUGIN_NAME="${RELEASE_TAG%--v*}"' \
+  'PLUGIN_NAME="${RELEASE_TAG%%--v*}"' \
+  "x--v1--v$PLANTED_VERSION" "$PLANTED_RELEASE_ID" "$PLANTED_REFUSAL" \
+  "no VERSION file at $MONOREPO/plugins/x for release tag x--v1--v$PLANTED_VERSION"
+expect_mutant_fails_elsewhere version-digit-rule-removed \
+  '    [[ "${RELEASE_TAG##*--v}" == [0-9]* ]] || fail "release tag $RELEASE_TAG has no version after its last --v"' \
+  '    true' \
+  'pro-gate--vnext' "$PRO_GATE_RELEASE_ID" 'has no version after its last --v' \
+  "release tag pro-gate--vnext does not match VERSION $PRO_GATE_VERSION"
+expect_mutant_fails_elsewhere version-file-guard-removed \
+  '  [[ -f "$plugin_root/VERSION" ]] || fail "no VERSION file at $plugin_root for release tag $RELEASE_TAG"' \
+  '  true' \
+  "pro-gates--v$PRO_GATE_VERSION" "$PRO_GATE_RELEASE_ID" 'no VERSION file at' \
+  "no plugin manifest at $MONOREPO/plugins/pro-gates for release tag pro-gates--v$PRO_GATE_VERSION"
+
+# Moving derivation ahead of the no-ops would make a draft release with a
+# malformed tag fail instead of being ignored. Two replacements move the call
+# to just after the current release is loaded.
+ordering_mutant="$TMP/helper-derive-before-no-ops.sh"
+replace_once "$HELPER" "$TMP/helper-derive-before-no-ops.step1" \
+  $'  require CURRENT_RELEASE_FILE\n  load_current_release\n' \
+  $'  require CURRENT_RELEASE_FILE\n  load_current_release\n  derive_plugin_identity\n'
+replace_once "$TMP/helper-derive-before-no-ops.step1" "$ordering_mutant" \
+  $'  derive_plugin_identity\n  RELEASE_VERSION="$(verify_release)"' \
+  $'  RELEASE_VERSION="$(verify_release)"'
+chmod +x "$ordering_mutant"
+expect_contract_reject derive-before-no-ops "$WORKFLOW" "$ordering_mutant"
+if run_monorepo "$ordering_mutant" "x--v1--v$PLANTED_VERSION" "$PLANTED_RELEASE_ID" "$MONO_MANIFEST" true false; then
+  die "derive-before-no-ops mutant still ignored a draft release with the planted tag"
+fi
+[[ ! -s "$CALLS_FILE" ]] || die "derive-before-no-ops mutant minted or sent a request for a draft release"
+grep -Fq "$PLANTED_REFUSAL" "$TMP/run-output" || die "derive-before-no-ops mutant did not refuse the draft release's planted tag"
+pass "derive-before-no-ops mutant refuses a draft release with the planted tag, so the no-ops stay ahead of derivation"
 
 printf '%d Tool Drop announce checks passed\n' "$pass_count"
