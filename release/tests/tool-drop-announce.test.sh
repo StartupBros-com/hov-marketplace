@@ -1486,8 +1486,8 @@ expect_mutant_fails_elsewhere() {
 }
 
 expect_mutant_breaks_announce body-on-repository-name \
-  '    --arg repository "$PLUGIN_NAME" \' \
-  '    --arg repository "$REPOSITORY" \' \
+  $'    --arg repository "$PLUGIN_NAME" \\' \
+  $'    --arg repository "$REPOSITORY" \\' \
   "pro-gate--v$PRO_GATE_VERSION" "$PRO_GATE_RELEASE_ID" "$PRO_GATE_BODY"
 expect_mutant_breaks_announce listed-on-repository-name \
   $'  require MARKETPLACE_MANIFEST\n  jq -e \\\n    --arg name "$PLUGIN_NAME" \\' \
