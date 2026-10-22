@@ -155,9 +155,9 @@ pass 'a ./docs path is checked without its prefix'
 printf '#!/usr/bin/env bash\n# my-docs/none.md foo.docs/none.md {x}docs/none.md docs/none.mdx docs/none.md.bak https://example.com/docs/none.md\n' >release/scripts/doc-pointer.sh
 bash "$SCRIPT" >"$TMP/out" || die 'non-root docs forms refused'
 pass 'longer names, prefixes, suffixes and URLs are not matched'
-printf '#!/usr/bin/env bash\n# see docs/release/plugin-release-recipe.md.\n' >release/scripts/doc-pointer.sh
-bash "$SCRIPT" >"$TMP/out" || die 'sentence-ending period refused'
-pass 'a sentence-ending period after .md still resolves'
+printf '#!/usr/bin/env bash\n# see docs/gone.md.\n' >release/scripts/doc-pointer.sh
+reject 'release/scripts/doc-pointer.sh names docs/gone.md, which does not exist' bash "$SCRIPT"
+pass 'a sentence-ending period after .md is left out of the path that is resolved'
 rm release/scripts/doc-pointer.sh
 
 printf '%s ci-repo-checks checks passed\n' "$PASS"
