@@ -148,6 +148,16 @@ pass 'an existing repository docs path passes and a plugin notes path is not mat
 printf 'jobs:\n  safe:\n    steps:\n      - run: echo see docs/missing.md\n' >.github/workflows/doc.yml
 reject '.github/workflows/doc.yml names docs/missing.md, which does not exist' bash "$SCRIPT"
 pass 'a workflow naming a missing repository docs path fails'
-rm .github/workflows/doc.yml release/scripts/doc-pointer.sh
+rm .github/workflows/doc.yml
+printf '#!/usr/bin/env bash\n# see ./docs/gone.md\n' >release/scripts/doc-pointer.sh
+reject 'release/scripts/doc-pointer.sh names docs/gone.md, which does not exist' bash "$SCRIPT"
+pass 'a ./docs path is checked without its prefix'
+printf '#!/usr/bin/env bash\n# my-docs/none.md foo.docs/none.md {x}docs/none.md docs/none.mdx docs/none.md.bak https://example.com/docs/none.md\n' >release/scripts/doc-pointer.sh
+bash "$SCRIPT" >"$TMP/out" || die 'non-root docs forms refused'
+pass 'longer names, prefixes, suffixes and URLs are not matched'
+printf '#!/usr/bin/env bash\n# see docs/release/plugin-release-recipe.md.\n' >release/scripts/doc-pointer.sh
+bash "$SCRIPT" >"$TMP/out" || die 'sentence-ending period refused'
+pass 'a sentence-ending period after .md still resolves'
+rm release/scripts/doc-pointer.sh
 
 printf '%s ci-repo-checks checks passed\n' "$PASS"

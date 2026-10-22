@@ -10,16 +10,18 @@ the steps below are the whole procedure.
 
 | App | Permissions | Used for | Secrets |
 | --- | --- | --- | --- |
-| **StartupBros HOV Release** | contents: write (metadata: read) | pushes `<name>--v<version>` tags, reads draft releases (GitHub shows another repository's drafts only to push-capable identities), creates the draft, publishes the pinned draft | `HOV_RELEASE_APP_ID`, `HOV_RELEASE_APP_PRIVATE_KEY` |
+| **StartupBros HOV Release** | contents: write (metadata: read) | pushes `<name>--v<version>` tags, reads draft releases (GitHub shows another repository's drafts only to push-capable identities), publishes the pinned draft | `HOV_RELEASE_APP_ID`, `HOV_RELEASE_APP_PRIVATE_KEY` |
 | **StartupBros HOV Marketplace Bot** | contents and pull-request write on this repository, no ruleset bypass | opens the repin PR, requests auto-merge, closes superseded repin PRs | `HOV_MARKETPLACE_APP_ID`, `HOV_MARKETPLACE_APP_PRIVATE_KEY` |
 
 Two facts bound the damage of a leak. A stolen bot key can open and queue a
 PR, but the card still changes only through a PR on `main` that passes the
 required checks, and the bot pushes nothing to `main`. A stolen release key
-can push a tag and create or publish a release in the repositories its
-installation covers: from U22 the `*--v*` tag ruleset limits tag writes to the
-release App and the author (R48), so the release App is the key to rotate
-first and fast.
+can push a tag and publish a release in the repositories its installation
+covers: from U22 the `*--v*` tag ruleset limits tag writes to the release App
+and the author (R48), so the release App is the key to rotate first and fast.
+The draft itself is staged by `release.yml` with the workflow's own
+`GITHUB_TOKEN` (a draft fires no event, so no App identity is needed there),
+and that job reads no App secret.
 
 The announcement needs no key: the release train mints a body-bound OIDC
 token for the announce service's audience. The release App's token is minted
@@ -104,10 +106,12 @@ Each proof is one observation; record which ones were made.
 
 - **The new key mints.** Dispatch the reconciler
   (`gh workflow run repin-reconcile.yml --repo StartupBros-com/hov-marketplace`)
-  and confirm the step "Mint a release App token for the plugin repositories"
-  succeeds in its log. The bot's mint step runs only when the run finds
-  drift, so for the bot key use the JWT check below with the new key, which
-  must return 200.
+  and confirm the mint step for the rotated key succeeds in its log: "Mint a
+  release App token for the plugin repositories" for the release App, "Mint a
+  marketplace-bot token for this repository" for the bot. Both steps run on
+  every reconciler run that can see their secrets, drift or not, so one
+  dispatch proves either key. The JWT check below with the new key, which
+  returns 200, is the same proof without a workflow run.
 - **The old key is dead.** A JWT signed with the old key gets 401 from
   `GET /app`. With the old `.pem` still on disk:
 

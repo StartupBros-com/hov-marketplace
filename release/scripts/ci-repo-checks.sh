@@ -76,8 +76,11 @@ elif ! awk -F '\t' '/^[[:space:]]*(#|$)/ {next}
     END {exit bad}' "$required"; then problem "required checks $required must have exactly two non-empty tab-separated fields: workflow basename.yml and job name"; fi
 # Every repository-root docs path a release script or workflow names must exist:
 # comments and CI error text send readers there, and a moved document (the recipe
-# at U11) otherwise points them at nothing. A plugin's own notes path
-# (plugins/<name>/docs/release-notes/...) follows a slash and is not matched.
+# at U11) otherwise points them at nothing. Matched: docs/<path>.md on its own,
+# with or without a leading ./ and with a sentence-ending period allowed after it.
+# Not matched: a docs directory inside another path (plugins/<name>/docs/..., a URL),
+# a variable or longer name in front (${dir}docs/x.md, my-docs/x.md), or a longer
+# suffix behind (docs/x.mdx, docs/x.md.bak).
 scripts="${SCRIPTS_DIR:-release/scripts}"
 while IFS=: read -r file doc; do
   [ -n "$doc" ] || continue
@@ -85,8 +88,8 @@ while IFS=: read -r file doc; do
 done < <({ find "$scripts" -type f -name '*.sh' 2>/dev/null;
            find "$workflows" -type f \( -name '*.yml' -o -name '*.yaml' \) 2>/dev/null; } | sort \
   | while IFS= read -r file; do
-      grep -oE '(^|[^/$[:alnum:]_])docs/[A-Za-z0-9_./-]+\.md' "$file" 2>/dev/null \
-        | sed -E 's#^[^d]##' | sort -u | sed "s#^#$file:#" || true
+      grep -oP '(?<![/$}.[:alnum:]_-])(?:\./)?docs/[A-Za-z0-9_./-]+\.md(?![A-Za-z0-9_-]|\.[A-Za-z0-9])' "$file" 2>/dev/null \
+        | sed 's#^\./##' | sort -u | sed "s#^#$file:#" || true
     done)
 if [ "$failed" -eq 0 ]; then printf 'ok - repository release checks passed\n'; fi
 exit "$failed"

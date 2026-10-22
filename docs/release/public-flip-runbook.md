@@ -20,9 +20,11 @@
 >   handling" removes a marketplace deploy key and a static announce secret.
 >   Neither exists in the chain any more: the release and the card PR run on
 >   two GitHub App key pairs, and the announcement authenticates with OIDC. A
->   suspected leak of an App key is handled by `key-rotation.md`; the
->   evidence-preservation and quarantine steps of that item still apply as
->   written.
+>   suspected leak of an App key is handled by `key-rotation.md`. Of that
+>   item, the evidence snapshot and the marketplace quarantine (make the
+>   repository private or reset `main` to the last trusted commit) still
+>   apply as written; the deploy-key removal and the announce-route
+>   quarantine (`TOOL_RELEASE_ANNOUNCE_SECRET`) have nothing left to act on.
 
 ## Ownership and stop conditions
 

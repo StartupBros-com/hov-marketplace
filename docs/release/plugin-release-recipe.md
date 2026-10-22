@@ -31,8 +31,9 @@ chain converges without them.
    everything below keys off the merged head, never a local commit.
 2. **Tag** (`auto-release.yml`, "Auto release on VERSION bump"). A push to
    `main` that touches `plugins/*/VERSION` runs `release/scripts/auto-release-decide.sh`,
-   which releases a plugin only when its VERSION existed in the first parent
-   with a different value, the new value is release semver, the plugin manifest
+   which releases a plugin only when its VERSION existed in the pre-push tip
+   of `main` (`github.event.before`, falling back to the first parent) with a
+   different value, the new value is release semver, the plugin manifest
    agrees, and no `<name>--v<version>` tag exists. A commit that adds a VERSION
    file (a plugin import, the stack push) creates no tag. The tag is pushed at
    the merged head by the release App (see Release identity); there is no
@@ -43,11 +44,18 @@ chain converges without them.
    match the tag, the notes file must pass the checker, and the gate
    (`release/scripts/release-gate.sh`) must find the `ci` run for that commit
    with the plugin's own `<name>` job green plus every row of
-   `release/required-checks.tsv`. Then it creates a **draft** release titled
-   `<name> v<version>` from the notes file. A tag that already has a release
-   stages nothing and says so. The manifest is read from the checkout, never
-   over a raw URL. The draft is a draft because publishing fires the
-   announcement, and the announcement must find the card already current.
+   `release/required-checks.tsv`. The gate waits up to 30 minutes for those
+   runs to exist and complete (CI runs a plugin's job only when its paths
+   change, so a bump that touches nothing under the plugin never satisfies
+   it), and then fails on any other workflow run on that commit that
+   concluded failure or timed out unless its file is a listed plumbing
+   workflow. Then it creates a **draft** release titled `<name> v<version>`
+   from the notes file, with the workflow's own `GITHUB_TOKEN`: a draft
+   fires no event, so no App identity is needed here. A tag that already has
+   a release stages nothing and says so. The manifest is read from the
+   checkout, never over a raw URL. The draft is a draft because publishing
+   fires the announcement, and the announcement must find the card already
+   current.
 4. **Card** (`repin-reconcile.yml`, "Repin reconcile"). The reconciler runs
    four times an hour (GitHub delays and drops scheduled runs, so allow
    longer), on every push to `main` that touches the manifest, and on dispatch.
@@ -211,7 +219,8 @@ A new plugin is a directory: `plugins/<name>/VERSION`,
 `plugins/<name>/skills/<name>/SKILL.md`, and `plugins/<name>/docs/release-notes/`.
 The commit that adds the VERSION file creates no tag; the first bump after it
 does. The reconciler repins only cards that exist, so write the first card by
-hand as a `git-subdir` entry (`source.url` this repository, `source.path`
+hand as a `git-subdir` entry (`source.url` the shared repository's clone URL
+exactly as the validator's `MONOREPO_SOURCE_URL` names it, `source.path`
 `plugins/<name>`, `source.sha` the commit the release tag points at,
 `metadata.{version,releaseId,releaseTag}`, `card.rows`, `card.run`) in a PR
 that changes the manifest and nothing else; it gets a normal review. Later
