@@ -137,9 +137,31 @@ pass 'unregistered completed failure trips the gate'
 printf '{"workflow_runs":[{"id":41,"path":".github/workflows/surprise.yml","status":"completed","conclusion":"timed_out"}]}\n' >"$FIX/all"
 reject 'concluded timed_out' bash "$SCRIPT" pro-gate "$SHA"
 pass 'unregistered timeout trips the gate'
-printf '{"workflow_runs":[{"id":1,"path":".github/workflows/validate.yml","status":"completed","conclusion":"failure"}]}\n{"workflow_runs":[{"id":2,"path":".github/workflows/pending.yml","status":"in_progress","conclusion":null}]}\n' >"$FIX/all"
+printf '{"workflow_runs":[{"id":1,"path":".github/workflows/repin-reconcile.yml","status":"completed","conclusion":"failure"}]}\n{"workflow_runs":[{"id":2,"path":".github/workflows/pending.yml","status":"in_progress","conclusion":null}]}\n' >"$FIX/all"
 bash "$SCRIPT" pro-gate "$SHA" >"$TMP/out" || die 'plumbing/pending tripwire'
 pass 'paginated plumbing failures and unknown pending runs do not block'
+printf '{"workflow_runs":[{"id":61,"path":".github/workflows/validate.yml","status":"completed","conclusion":"failure"}]}\n' >"$FIX/all"
+reject 'unregistered workflow .github/workflows/validate.yml run 61 concluded failure' bash "$SCRIPT" pro-gate "$SHA"
+pass 'without its required row a red marketplace validation run trips the gate instead of passing as plumbing'
+# The shipped required-checks file: a green plugin job never stages a draft from a commit
+# whose marketplace validation is red, and the variable-gated pinned-sources job may be skipped.
+reset
+cp "$ROOT/release/required-checks.tsv" "$REQUIRED_CHECKS"
+runs 10 >"$FIX/plugins-ci.yml"
+printf '{"jobs":[{"name":"pro-gate","conclusion":"success"}]}\n' >"$FIX/jobs-10"
+runs 60 >"$FIX/validate.yml"
+printf '{"jobs":[{"name":"Trusted syntax and policy","conclusion":"failure"},{"name":"Pinned sources","conclusion":"skipped"}]}\n' >"$FIX/jobs-60"
+printf '{"workflow_runs":[{"id":60,"path":".github/workflows/validate.yml","status":"completed","conclusion":"failure"},{"id":10,"path":".github/workflows/plugins-ci.yml","status":"completed","conclusion":"success"}]}\n' >"$FIX/all"
+reject 'job Trusted syntax and policy in validate.yml run 60 concluded failure' bash "$SCRIPT" pro-gate "$SHA"
+pass 'the shipped required-checks file blocks a green plugin job behind a red marketplace validation'
+printf '{"jobs":[{"name":"Trusted syntax and policy","conclusion":"success"},{"name":"Pinned sources","conclusion":"skipped"}]}\n' >"$FIX/jobs-60"
+printf '{"workflow_runs":[{"id":60,"path":".github/workflows/validate.yml","status":"completed","conclusion":"success"},{"id":10,"path":".github/workflows/plugins-ci.yml","status":"completed","conclusion":"success"}]}\n' >"$FIX/all"
+bash "$SCRIPT" pro-gate "$SHA" >"$TMP/out" || die 'green validation with a skipped pinned-sources job'
+grep -Fq 'job Trusted syntax and policy in validate.yml run 60 passed' "$TMP/out" || die 'validation job not consulted'
+pass 'a green marketplace validation passes while its variable-gated pinned-sources job is skipped'
+rm "$FIX/validate.yml"
+reject "no validate.yml run found for $SHA on main" bash "$SCRIPT" pro-gate "$SHA"
+pass 'a missing marketplace validation run at the release commit blocks at the deadline'
 reset
 runs 10 >"$FIX/plugins-ci.yml"
 printf '{"jobs":[{"name":"pro-gate","conclusion":"success"}]}\n' >"$FIX/jobs-10"

@@ -4,7 +4,9 @@ set -euo pipefail
 name="${1:?usage: release-gate.sh <name> <sha>}"; sha="${2:?sha is required}"
 repo="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"; branch="${DEFAULT_BRANCH:-main}"
 ci="${CI_WORKFLOW:-plugins-ci.yml}"; required="${REQUIRED_CHECKS:-release/required-checks.tsv}"
-plumbing="${PLUMBING_WORKFLOWS:-auto-release.yml release.yml publish-staged-release.yml release-train.yml repin-reconcile.yml validate.yml ci.yml}"
+# The marketplace validate workflow is deliberately absent: its job is a required row,
+# and without that row a red validation run must trip the gate, never pass as plumbing.
+plumbing="${PLUMBING_WORKFLOWS:-auto-release.yml release.yml publish-staged-release.yml release-train.yml repin-reconcile.yml ci.yml}"
 poll="${GATE_POLL_SECS:-30}"; deadline=$((SECONDS + ${GATE_DEADLINE_SECS:-1800}))
 fail() { printf '::error::%s\n' "$*" >&2; exit 1; }
 [ -f "$required" ] || fail "required checks file $required does not exist"
