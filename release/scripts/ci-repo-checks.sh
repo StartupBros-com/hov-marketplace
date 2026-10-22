@@ -74,5 +74,19 @@ if [ ! -f "$required" ]; then problem "required checks file $required does not e
 elif ! awk -F '\t' '/^[[:space:]]*(#|$)/ {next}
     NF != 2 || $1 !~ /^[^/[:space:]]+\.yml$/ || $2 !~ /[^[:space:]]/ {bad=1; print "invalid required check at line " NR > "/dev/stderr"}
     END {exit bad}' "$required"; then problem "required checks $required must have exactly two non-empty tab-separated fields: workflow basename.yml and job name"; fi
+# Every repository-root docs path a release script or workflow names must exist:
+# comments and CI error text send readers there, and a moved document (the recipe
+# at U11) otherwise points them at nothing. A plugin's own notes path
+# (plugins/<name>/docs/release-notes/...) follows a slash and is not matched.
+scripts="${SCRIPTS_DIR:-release/scripts}"
+while IFS=: read -r file doc; do
+  [ -n "$doc" ] || continue
+  if [ ! -f "$doc" ]; then problem "$file names $doc, which does not exist"; fi
+done < <({ find "$scripts" -type f -name '*.sh' 2>/dev/null;
+           find "$workflows" -type f \( -name '*.yml' -o -name '*.yaml' \) 2>/dev/null; } | sort \
+  | while IFS= read -r file; do
+      grep -oE '(^|[^/$[:alnum:]_])docs/[A-Za-z0-9_./-]+\.md' "$file" 2>/dev/null \
+        | sed -E 's#^[^d]##' | sort -u | sed "s#^#$file:#" || true
+    done)
 if [ "$failed" -eq 0 ]; then printf 'ok - repository release checks passed\n'; fi
 exit "$failed"

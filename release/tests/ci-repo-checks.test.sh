@@ -134,5 +134,20 @@ pass 'required checks accept comments blanks and a job with spaces'
 pin_to "$pin"; rm .github/workflows/release-train.yml
 reject '0 distinct pinned shas' bash "$SCRIPT"
 pass 'missing helper pin fails'
+pin_to "$pin"
+mkdir -p docs/release
+printf '#!/usr/bin/env bash\n# see docs/nowhere.md and plugins/x/docs/release-notes/v1.0.0.md\n' >release/scripts/doc-pointer.sh
+reject 'release/scripts/doc-pointer.sh names docs/nowhere.md, which does not exist' bash "$SCRIPT"
+pass 'a release script naming a missing repository docs path fails'
+printf '#!/usr/bin/env bash\n# see docs/release/plugin-release-recipe.md and plugins/x/docs/release-notes/v1.0.0.md\n' >release/scripts/doc-pointer.sh
+reject 'release/scripts/doc-pointer.sh names docs/release/plugin-release-recipe.md, which does not exist' bash "$SCRIPT"
+printf '# recipe\n' >docs/release/plugin-release-recipe.md
+bash "$SCRIPT" >"$TMP/out" || die 'existing docs path refused'
+grep -q 'ok - repository release checks passed' "$TMP/out" || die 'docs path guard did not pass'
+pass 'an existing repository docs path passes and a plugin notes path is not matched'
+printf 'jobs:\n  safe:\n    steps:\n      - run: echo see docs/missing.md\n' >.github/workflows/doc.yml
+reject '.github/workflows/doc.yml names docs/missing.md, which does not exist' bash "$SCRIPT"
+pass 'a workflow naming a missing repository docs path fails'
+rm .github/workflows/doc.yml release/scripts/doc-pointer.sh
 
 printf '%s ci-repo-checks checks passed\n' "$PASS"
