@@ -1,0 +1,62 @@
+name: Auto release on VERSION bump
+
+on:
+  push:
+    branches: [main]
+    paths: ['plugins/*/VERSION']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: auto-release-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: release
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@ac593985615ec2ede58e132d2e21d2b1cbd6127c
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Provision pinned CI tools
+        run: release/scripts/provision-ci-tools.sh
+      - name: Decide which VERSION bumps need tags
+        id: decide
+        continue-on-error: true
+        env:
+          PARENT: ${{ github.event.before }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: release/scripts/auto-release-decide.sh > "$RUNNER_TEMP/due.tsv"
+      - name: Check release App identity or name manual tags
+        if: steps.decide.outputs.due == 'true'
+        id: identity
+        env:
+          HOV_RELEASE_APP_ID: ${{ secrets.HOV_RELEASE_APP_ID }}
+          HOV_RELEASE_APP_PRIVATE_KEY: ${{ secrets.HOV_RELEASE_APP_PRIVATE_KEY }}
+        run: release/scripts/auto-release-tag.sh --identity "$RUNNER_TEMP/due.tsv"
+      - name: Mint release App token
+        if: steps.decide.outputs.due == 'true' && steps.identity.outputs.have_app == 'true'
+        id: mint
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.HOV_RELEASE_APP_ID }}
+          private-key: ${{ secrets.HOV_RELEASE_APP_PRIVATE_KEY }}
+          owner: StartupBros-com
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+      - name: Push due release tags
+        id: tag
+        if: steps.decide.outputs.due == 'true' && steps.identity.outputs.have_app == 'true'
+        env:
+          RELEASE_TOKEN: ${{ steps.mint.outputs.token }}
+        run: release/scripts/auto-release-tag.sh "$RUNNER_TEMP/due.tsv"
+      - name: Fail the run after tagging the valid bumps
+        if: steps.decide.outcome == 'failure'
+        run: release/scripts/auto-release-decide.sh --fail-invalid

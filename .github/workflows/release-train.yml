@@ -1,0 +1,37 @@
+name: Release train
+
+on:
+  release:
+    types: [published, edited]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-train-${{ github.event.release.id }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.event.release.draft == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@ac593985615ec2ede58e132d2e21d2b1cbd6127c
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify release tag ancestry and plugin identity
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: release/scripts/release-train-verify.sh
+
+  announce:
+    needs: verify
+    if: github.event.release.draft == false && github.event.release.prerelease == false && needs.verify.result == 'success'
+    permissions:
+      contents: read
+      id-token: write
+    uses: StartupBros-com/hov-marketplace/.github/workflows/hov-tool-drop-announce.yml@41bb6f811f1c1ad65f62c1ef32e696c60fb1d8c3 # U7-U9: prefix-aware announce guard, card-source helper, prefix-scoped releases

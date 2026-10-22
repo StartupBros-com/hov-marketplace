@@ -1,0 +1,4 @@
+# workflow-file<TAB>job-name: additional exact workflow basenames and job names
+# required by the release gate. Blank lines and comments are ignored.
+# Append the staging repository's CI line (ci.yml, setup, hooks, suites, secrets)
+# when that workflow lands; the per-plugin job in plugins-ci.yml is implicit.

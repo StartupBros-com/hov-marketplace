@@ -190,10 +190,13 @@ vX.Y.Z --draft --verify-tag --title "<plugin> vX.Y.Z" --notes-file
 docs/release-notes/vX.Y.Z.md`), wait for or merge the reconciler's card PR,
 then, if the reconciler has not published it (it cannot see drafts without
 the release App), publish from your own identity with `gh release edit vX.Y.Z
---draft=false --latest`; `publish-staged-release.yml` refuses without an
+--draft=false --latest=false`; `publish-staged-release.yml` refuses without an
 identity for the reason above. Branch names must never be tag-shaped
 (`vX.Y.Z` as a branch collides with the tag in `actions/checkout` ref
 resolution — issue #49).
+In a shared repository the staged-publish workflow and the repin publisher send
+`make_latest=false` so no plugin takes the repository's latest badge; the manual
+command passes `--latest=false` for the same reason. Never pass a bare `--latest`.
 
 ## Card copy: what the validator enforces
 
