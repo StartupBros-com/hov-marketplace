@@ -217,11 +217,12 @@ if run_publish; then die 'a run with one failing plugin exited zero'; fi
   || die "the healthy plugin was not published past the failing one: $(cat "$CALLS")"
 pass 'a failing plugin still lets the next plugin publish, and the run exits nonzero'
 
-# Every PATCH argument is recorded: a latest flag of any value is forbidden.
+# Every PATCH argument is recorded. A plugin's own repository keeps GitHub's default
+# (no latest argument at all); the shared repository is told make_latest=false, because
+# GitHub's default would hand the repository-wide badge to whichever plugin published last.
 reset; fixture widget true "[$UP,$UP]"; manifest "$TMP/m.json" widget
 run_publish || die 'url publish failed'
-grep -Fxq 'PATCH repos/acme/widget/releases/900 draft=false' "$CALLS" || die 'url PATCH fields differ'
-if grep -q 'make_latest' "$CALLS"; then die 'url publish claimed latest'; fi
+[ "$(cat "$CALLS")" = 'PATCH repos/acme/widget/releases/900 draft=false' ] || die "url PATCH fields differ: $(cat "$CALLS")"
 pass 'a url publish sends draft=false and no make_latest argument'
 
 mono_fixture() { # <version> <assets> [card version]
@@ -236,9 +237,9 @@ mono_fixture() { # <version> <assets> [card version]
 }
 mono_fixture 1.2.3 '[]'
 run_publish || die 'git-subdir publish failed'
-grep -Fxq 'PATCH repos/acme/mono/releases/900 draft=false' "$CALLS" || die 'git-subdir PATCH fields differ'
-if grep -q 'make_latest' "$CALLS"; then die 'git-subdir publish claimed latest'; fi
-pass 'a git-subdir publish sends draft=false and no make_latest argument'
+[ "$(cat "$CALLS")" = 'PATCH repos/acme/mono/releases/900 draft=false make_latest=false' ] || die "git-subdir PATCH fields differ: $(cat "$CALLS")"
+if grep -q 'make_latest=true' "$CALLS"; then die 'git-subdir publish claimed latest'; fi
+pass 'a git-subdir publish sends draft=false and make_latest=false, never make_latest=true'
 
 for bad_version in gadget--1.2.3 v1.2.3; do
   mono_fixture 1.2.3 '[]' "$bad_version"
@@ -263,7 +264,7 @@ pass 'a git-subdir release tagged v1.2.3 is refused by the prefix guard before t
 mono_fixture 1.0.0 '[]'
 jq -n --argjson assets "[$UP,$UP]" '[{id:800,tag_name:"widget--v3.0.0",draft:false,prerelease:false,published_at:"2026-08-01",assets:$assets}]' > "$FIX/mono/releases.json"
 run_publish || die 'other family raised asset floor'
-grep -Fxq 'PATCH repos/acme/mono/releases/900 draft=false' "$CALLS" || die 'zero-floor release not published'
+grep -Fxq 'PATCH repos/acme/mono/releases/900 draft=false make_latest=false' "$CALLS" || die 'zero-floor release not published'
 pass 'other plugins published assets do not raise the gadget floor above zero'
 
 mono_fixture 2.0.0 "[$UP]"

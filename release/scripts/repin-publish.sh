@@ -83,7 +83,7 @@ live_card() {
 # Returns 1 on any read failure or disagreement. Called in an || list, so set -e
 # is off in here and every command that can fail says so explicitly.
 publish_card() {
-  local name="$1" card source_fields _shape repo _path prefix _url card_version card_tag card_id card_sha
+  local name="$1" card source_fields shape repo _path prefix _url card_version card_tag card_id card_sha latest_args
   local rel tag is_draft is_pre sha default_branch compare_status
   local pending have_assets prev_assets releases live
 
@@ -101,7 +101,7 @@ publish_card() {
   card_tag="$(jq -r '.metadata.releaseTag // ""' <<<"$card")"
   card_sha="$(jq -r '.source.sha // ""' <<<"$card")"
   source_fields="$(card_source <<<"$card")" || { warn "could not resolve the source of $name"; return 1; }
-  IFS=$'\x1f' read -r _shape repo _path prefix _url <<<"${source_fields//$'\t'/$'\x1f'}"
+  IFS=$'\x1f' read -r shape repo _path prefix _url <<<"${source_fields//$'\t'/$'\x1f'}"
 
   rel="$(gh api "repos/$repo/releases/$card_id" 2>/dev/null)" \
     || { warn "could not read release $card_id of $repo"; return 1; }
@@ -171,8 +171,13 @@ publish_card() {
     printf 'would publish %s: %s (releaseId %s, dry run)\n' "$name" "$tag" "$card_id"
     return 0
   fi
-  # The shared repository holds every plugin's releases, so no publish here may claim its latest badge; leave GitHub's default behaviour alone.
-  is_draft="$(gh api -X PATCH "repos/$repo/releases/$card_id" -F draft=false --jq '.draft' 2>/dev/null)" \
+  # GitHub marks a newly published release the repository's latest unless told not to.
+  # The shared repository holds every plugin's releases, so a publish there says
+  # make_latest=false and the badge never moves between plugins (R13). A plugin's own
+  # repository keeps GitHub's default, which is the behaviour it always had.
+  latest_args=()
+  [ "$shape" != git-subdir ] || latest_args=(-f make_latest=false)
+  is_draft="$(gh api -X PATCH "repos/$repo/releases/$card_id" -F draft=false ${latest_args[@]+"${latest_args[@]}"} --jq '.draft' 2>/dev/null)" \
     || { warn "could not publish $tag in $repo"; return 1; }
   [ "$is_draft" = false ] || { warn "publishing $tag in $repo left it a draft"; return 1; }
   printf 'published now %s: %s (releaseId %s)\n' "$name" "$tag" "$card_id"

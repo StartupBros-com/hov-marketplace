@@ -82,8 +82,9 @@ from pro-gate, generalized in hov-marketplace#118): `auto-release.yml`,
    that also changes copy is a human PR and gets a normal review.
 5. The merge's push to `main` re-runs `repin-reconcile` (the scheduled run
    is the backstop), and `release/scripts/repin-publish.sh` publishes the draft the
-   card now pins (it never marks a release latest: in the shared repository every
-   plugin's releases share one list). It re-checks tag, version, commit, default-branch
+   card now pins (in the shared repository it publishes with `make_latest=false`, so no
+   plugin's publish moves the repository-wide latest badge: every plugin's releases
+   share one list). It re-checks tag, version, commit, default-branch
    ancestry and that every asset finished uploading; while assets are still
    uploading it waits for the next scheduled run. Right before publishing it
    re-reads the card from live `main` and skips a release `main` no longer
