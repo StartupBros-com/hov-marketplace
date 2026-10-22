@@ -1,5 +1,38 @@
 # Public flip and release train runbook
 
+> **Scope, as of 2026-10.** This runbook is the record of the 2026-07 public
+> flip of this repository and its release train; the evidence sections at the
+> end are dated 2026-07-15 and the body below is kept as written. Three things
+> about it have changed since:
+>
+> - **The rename to `hovstack` does not follow it.** The restructure plan's
+>   flip units (U20 to U26; the plan lands in this repository at U23) supersede
+>   this runbook for the rename, the plugin imports and the cutover window.
+>   Its stop conditions under "Ownership and stop conditions" and its
+>   clean-history contingency stay valid for this repository (A12): a
+>   full-history secrets finding still stops the work, and the remedy is still
+>   a republish from a clean root.
+> - **The release chain it describes is the per-repository one.** How a
+>   release ships today, and how one is held back, is in
+>   `plugin-release-recipe.md`.
+> - **Its credential-exposure procedure is from the deploy-key era.** The
+>   "Release-job credential exposure" item under "Rollback and failure
+>   handling" removes a marketplace deploy key and a static announce secret.
+>   Neither exists in the chain any more: the release and the card PR run on
+>   two GitHub App key pairs, and the announcement authenticates with OIDC. A
+>   suspected leak of an App key is handled by `key-rotation.md`. Of that
+>   item, the evidence snapshot and the marketplace quarantine (make the
+>   repository private or reset `main` to the last trusted commit) still
+>   apply as written. The deploy-key removal, the removal of the caller
+>   repository from the two organisation secrets of that era, the
+>   announce-route quarantine (`TOOL_RELEASE_ANNOUNCE_SECRET`) and the
+>   replacement announce secret have nothing left to act on. The rotation
+>   at its centre is `key-rotation.md`. The rest of the item (cancelling
+>   active release runs, the audit and the restore from the trusted commit,
+>   reconciling the announcements against the releases, recording the
+>   compromise window and notifying installs) is tied to neither
+>   credential and stands.
+
 ## Ownership and stop conditions
 
 Will owns every command marked **Will-owned**. Automation must not change repository visibility, mint credentials, enable organization security settings, apply the production migration, publish releases, move staged vault pages live, or send the Discord reply.
