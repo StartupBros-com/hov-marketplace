@@ -23,8 +23,15 @@
 >   suspected leak of an App key is handled by `key-rotation.md`. Of that
 >   item, the evidence snapshot and the marketplace quarantine (make the
 >   repository private or reset `main` to the last trusted commit) still
->   apply as written; the deploy-key removal and the announce-route
->   quarantine (`TOOL_RELEASE_ANNOUNCE_SECRET`) have nothing left to act on.
+>   apply as written. The deploy-key removal, the removal of the caller
+>   repository from the two organisation secrets of that era, the
+>   announce-route quarantine (`TOOL_RELEASE_ANNOUNCE_SECRET`) and the
+>   replacement announce secret have nothing left to act on. The rotation
+>   at its centre is `key-rotation.md`. The rest of the item (cancelling
+>   active release runs, the audit and the restore from the trusted commit,
+>   reconciling the announcements against the releases, recording the
+>   compromise window and notifying installs) is tied to neither
+>   credential and stands.
 
 ## Ownership and stop conditions
 
