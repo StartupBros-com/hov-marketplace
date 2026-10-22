@@ -147,7 +147,7 @@ print(utf16_prefix("\n".join(out), 600))'
   fi
   # Prose fallback: the drop card gets an excerpt instead of a what's-new list.
   # Warn loudly so a degraded card is visible in the release run.
-  printf '::warning title=No release highlights::%s %s has no "## Highlights" bullets; the drop card falls back to a prose excerpt. See docs/plugin-release-recipe.md.\n' \
+  printf '::warning title=No release highlights::%s %s has no "## Highlights" bullets; the drop card falls back to a prose excerpt. See docs/release/plugin-release-recipe.md.\n' \
     "${REPOSITORY:-plugin}" "${RELEASE_TAG:-release}" >&2
   printf '%s' "$notes" \
     | awk 'BEGIN{RS=""} NR==1' \

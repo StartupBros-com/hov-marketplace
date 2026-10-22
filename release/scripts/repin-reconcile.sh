@@ -11,7 +11,7 @@ set -euo pipefail
 # the repos grew defences against retrying instead of making retries harmless
 # ("the chain does NOT self-retry past tag creation by design"), and the one step
 # no event could perform, updating this manifest, was left to a human following
-# docs/plugin-release-recipe.md by hand. Miss it and the release ships
+# docs/release/plugin-release-recipe.md by hand. Miss it and the release ships
 # undistributed.
 #
 # This script is the opposite shape. It observes two facts — what the plugin has

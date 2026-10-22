@@ -7,7 +7,7 @@
 # failure loud at release time instead of silent in front of customers.
 #
 # Usage: check-release-notes.sh <notes-file>     (or pipe the body on stdin with "-")
-# Conventions in docs/plugin-release-recipe.md, section "Release notes".
+# Conventions in docs/release/plugin-release-recipe.md, section "Release notes".
 set -euo pipefail
 
 src="${1:-}"
@@ -112,7 +112,7 @@ EOF
 fi
 
 if [ "$fails" -gt 0 ]; then
-  printf '\n::error::release notes are not customer-ready (%d problem(s)). See docs/plugin-release-recipe.md, section "Release notes"\n' "$fails" >&2
+  printf '\n::error::release notes are not customer-ready (%d problem(s)). See docs/release/plugin-release-recipe.md, section "Release notes"\n' "$fails" >&2
   exit 1
 fi
 echo "release notes OK"
