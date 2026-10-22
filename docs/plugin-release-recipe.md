@@ -40,13 +40,13 @@ to see the repository from two separate places, and only the first is scriptable
    even with the secrets in place.
 
 3. `repin-reconcile` only reconciles cards that already exist, and its
-   draft-visible read token is minted for the explicit `repositories:` list in
-   `.github/workflows/repin-reconcile.yml`. For a NEW plugin, write the first
+   draft-visible read token is minted for the list in the repository variable
+   `HOV_RELEASE_APP_REPOSITORIES`. For a NEW plugin, write the first
    card by hand (name, `source.url`, `source.sha` = the commit the release tag
    points at, `metadata.{version,releaseId,releaseTag}`, `card.rows`,
-   `card.run`), add the repo to that `repositories:` list, and add the README
-   install line and section in the same PR. Later releases reconcile
-   automatically.
+   `card.run`), add the repository to `HOV_RELEASE_APP_REPOSITORIES` in this repo's
+   Actions settings, and add the README install line and section in the same
+   PR. Later releases reconcile automatically.
 
 Bootstrap the repo at a pre-release `VERSION` (for example `0.1.0-rc1`) so the
 first push to main does not try to release before both are in place; the real
@@ -82,7 +82,8 @@ from pro-gate, generalized in hov-marketplace#118): `auto-release.yml`,
    that also changes copy is a human PR and gets a normal review.
 5. The merge's push to `main` re-runs `repin-reconcile` (the scheduled run
    is the backstop), and `release/scripts/repin-publish.sh` publishes the draft the
-   card now pins and marks it latest. It re-checks tag, version, commit, default-branch
+   card now pins (it never marks a release latest: in the shared repository every
+   plugin's releases share one list). It re-checks tag, version, commit, default-branch
    ancestry and that every asset finished uploading; while assets are still
    uploading it waits for the next scheduled run. Right before publishing it
    re-reads the card from live `main` and skips a release `main` no longer
@@ -146,7 +147,8 @@ bypass and pushes nothing to `main`, so a stolen bot key can open and queue a
 PR but cannot skip the validator. The publish is not a dispatch into another
 repository's workflow; it is a state check that flips one draft the merged
 card already names, so it cannot start a release loop. To hold a release back,
-delete or re-draft it before the card lands, or disable `repin-reconcile`.
+delete or re-draft it before the card lands, or disable `repin-reconcile`,
+for a per-plugin repository or the shared one alike.
 
 ### Release identity
 
@@ -160,8 +162,8 @@ credentials are the organization Actions secrets `HOV_RELEASE_APP_ID` and
 `HOV_RELEASE_APP_PRIVATE_KEY`, visible to the plugin repositories only. A
 `RELEASE_PAT` repository secret still works as a fallback (pro-gate's original
 shape). Adding a new plugin to the catalog means adding its repository to the
-App installation, to both secrets' repository lists, and to the `repositories:`
-list in this repo's `repin-reconcile.yml`.
+App installation, to both secrets' repository lists, and to the repository variable
+`HOV_RELEASE_APP_REPOSITORIES` in this repo.
 
 The release App is also what publishes the pinned draft from this repository's
 `repin-reconcile` run: its contents write on the plugin repository is enough to

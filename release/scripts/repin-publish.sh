@@ -76,27 +76,16 @@ live_card() {
       | if length == 1 then .[0] else empty end' <<<"$live"
 }
 
-# Same rule as repin-reconcile.sh: anything but a github.com https url is refused.
-repo_from_url() {
-  local url="$1" path
-  case "$url" in
-    https://github.com/*) path="${url#https://github.com/}" ;;
-    *) return 1 ;;
-  esac
-  path="${path%.git}"
-  case "$path" in
-    */*/*|'') return 1 ;;
-    */*) printf '%s\n' "$path" ;;
-    *) return 1 ;;
-  esac
-}
+# One rule for shape, repo, path and prefix instead of three copies.
+# shellcheck source=release/scripts/card-source.sh
+. "$(dirname "${BASH_SOURCE[0]}")/card-source.sh"
 
 # Returns 1 on any read failure or disagreement. Called in an || list, so set -e
 # is off in here and every command that can fail says so explicitly.
 publish_card() {
-  local name="$1" card url repo card_version card_tag card_id card_sha
-  local rel tag is_draft is_pre sha obj_type default_branch compare_status
-  local pending have_assets prev_assets live
+  local name="$1" card source_fields _shape repo _path prefix _url card_version card_tag card_id card_sha
+  local rel tag is_draft is_pre sha default_branch compare_status
+  local pending have_assets prev_assets releases live
 
   card="$(jq -ce --arg n "$name" '
       [ .plugins[] | select(type == "object" and .name == $n) ] as $c
@@ -111,8 +100,8 @@ publish_card() {
   card_version="$(jq -r '.metadata.version // ""' <<<"$card")"
   card_tag="$(jq -r '.metadata.releaseTag // ""' <<<"$card")"
   card_sha="$(jq -r '.source.sha // ""' <<<"$card")"
-  url="$(jq -r '.source.url // empty' <<<"$card")"
-  repo="$(repo_from_url "$url")" || { warn "$name has an unresolvable source.url: $url"; return 1; }
+  source_fields="$(card_source <<<"$card")" || { warn "could not resolve the source of $name"; return 1; }
+  IFS=$'\x1f' read -r _shape repo _path prefix _url <<<"${source_fields//$'\t'/$'\x1f'}"
 
   rel="$(gh api "repos/$repo/releases/$card_id" 2>/dev/null)" \
     || { warn "could not read release $card_id of $repo"; return 1; }
@@ -128,23 +117,21 @@ publish_card() {
   [ "$is_pre" = false ] || { warn "$name pins prerelease $tag; the marketplace never publishes one"; return 1; }
   [ "$tag" = "$card_tag" ] \
     || { warn "$name: release $card_id is tagged '$tag' but the card says '$card_tag'"; return 1; }
-  [ "$card_version" = "${tag#v}" ] \
-    || { warn "$name: card version '$card_version' does not match tag $tag"; return 1; }
+  case "$tag" in
+    "$prefix"*) ;;
+    *) warn "$name: tag $tag does not start with prefix $prefix"; return 1 ;;
+  esac
+  [ "$card_version" = "${tag#"$prefix"}" ] \
+    || { warn "$name: card version '$card_version' does not match tag $tag with prefix $prefix"; return 1; }
 
-  sha="$(gh api "repos/$repo/git/ref/tags/${tag}" --jq '.object.sha' 2>/dev/null)" \
+  sha="$(tag_commit "$repo" "$tag")" \
     || { warn "could not resolve tag $tag in $repo"; return 1; }
-  obj_type="$(gh api "repos/$repo/git/ref/tags/${tag}" --jq '.object.type' 2>/dev/null)" \
-    || { warn "could not read the tag type of $tag in $repo"; return 1; }
-  if [ "$obj_type" = tag ]; then
-    sha="$(gh api "repos/$repo/git/tags/$sha" --jq '.object.sha' 2>/dev/null)" \
-      || { warn "could not dereference annotated tag $tag in $repo"; return 1; }
-  fi
   [ "$sha" = "$card_sha" ] \
     || { warn "$name: $tag is commit ${sha:0:12} but the card pins ${card_sha:0:12}"; return 1; }
 
-  default_branch="$(gh api "repos/$repo" --jq '.default_branch' 2>/dev/null)" \
+  default_branch="$(default_branch "$repo")" \
     || { warn "could not read the default branch of $repo"; return 1; }
-  compare_status="$(gh api "repos/$repo/compare/${default_branch}...${sha}" --jq '.status' 2>/dev/null)" \
+  compare_status="$(compare_status "$repo" "$default_branch" "$sha")" \
     || { warn "could not compare $tag (${sha:0:8}) against $default_branch in $repo"; return 1; }
   case "$compare_status" in
     identical|behind) ;;
@@ -157,10 +144,14 @@ publish_card() {
   pending="$(jq '[.assets[]? | select(.state != "uploaded")] | length' <<<"$rel")" \
     || { warn "could not read the assets of $tag in $repo"; return 1; }
   have_assets="$(jq '[.assets[]? | select(.state == "uploaded")] | length' <<<"$rel")"
-  prev_assets="$(gh api "repos/$repo/releases?per_page=100" --jq '
-      [ .[] | select(type == "object" and .draft == false and .prerelease == false) ]
+  releases="$(list_releases "$repo")" \
+    || { warn "could not read the published releases of $repo"; return 1; }
+  prev_assets="$(jq --arg prefix "$prefix" '
+      [ .[] | select(type == "object" and .draft == false and .prerelease == false)
+            | select((.tag_name | type) == "string")
+            | select(.tag_name | startswith($prefix)) ]
       | sort_by(.published_at) | last | (.assets // []) | length
-    ' 2>/dev/null)" \
+    ' <<<"$releases")" \
     || { warn "could not read the published releases of $repo"; return 1; }
   if [ "$pending" -ne 0 ] || [ "$have_assets" -lt "$prev_assets" ]; then
     printf '::notice::%s %s is pinned but its assets are incomplete (%s uploaded, %s pending, previous release had %s); not publishing yet\n' \
@@ -180,7 +171,8 @@ publish_card() {
     printf 'would publish %s: %s (releaseId %s, dry run)\n' "$name" "$tag" "$card_id"
     return 0
   fi
-  is_draft="$(gh api -X PATCH "repos/$repo/releases/$card_id" -F draft=false -f make_latest=true --jq '.draft' 2>/dev/null)" \
+  # The shared repository holds every plugin's releases, so no publish here may claim its latest badge; leave GitHub's default behaviour alone.
+  is_draft="$(gh api -X PATCH "repos/$repo/releases/$card_id" -F draft=false --jq '.draft' 2>/dev/null)" \
     || { warn "could not publish $tag in $repo"; return 1; }
   [ "$is_draft" = false ] || { warn "publishing $tag in $repo left it a draft"; return 1; }
   printf 'published now %s: %s (releaseId %s)\n' "$name" "$tag" "$card_id"

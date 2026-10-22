@@ -20,6 +20,9 @@ set -euo pipefail
 # changes nothing the second time, which is what makes it safe to run on a timer,
 # after a failure, or halfway through a botched release.
 #
+# Cards may be per-plugin url entries or git-subdir entries in the shared
+# repository. Each shape selects only its own prefix: v or <name>--v.
+#
 # CREDENTIAL POSTURE
 #
 # It runs INSIDE hov-marketplace, so the only write is local: a branch and a PR
@@ -53,38 +56,9 @@ ONLY_PLUGIN="${ONLY_PLUGIN:-}"
 
 [ -s "$MANIFEST" ] || fail "manifest not found: $MANIFEST"
 
-# owner/repo from a canonical card source url. Anything that is not a
-# github.com https url is refused rather than guessed: a card we cannot resolve
-# is a card we must not silently skip.
-repo_from_url() {
-  local url="$1" path
-  case "$url" in
-    https://github.com/*) path="${url#https://github.com/}" ;;
-    *) return 1 ;;
-  esac
-  path="${path%.git}"
-  case "$path" in
-    */*/*|'') return 1 ;;
-    */*) printf '%s\n' "$path" ;;
-    *) return 1 ;;
-  esac
-}
-
-# The newest release for a plugin, INCLUDING drafts. Drafts are deliberately in
-# scope: draft-first staging means the release that needs pinning is a draft, and
-# its id is exactly what the card must carry before it can be published.
-# Prereleases are excluded — they are not what the marketplace distributes.
-newest_release() {
-  local repo="$1"
-  gh api "repos/$repo/releases?per_page=100" --jq '
-    [ .[] | select(type == "object")
-          | select(.prerelease == false)
-          | select((.tag_name | type) == "string" and (.tag_name | length) > 0)
-          | select((.id | type) == "number" and .id > 0 and (.id | floor) == .id)
-          | {id, tag_name, draft, created_at} ]
-    | sort_by(.created_at) | reverse | first // empty
-  ' 2>/dev/null
-}
+# One rule for shape, repo, path and prefix instead of three copies.
+# shellcheck source=release/scripts/card-source.sh
+. "$(dirname "${BASH_SOURCE[0]}")/card-source.sh"
 
 plugins="$(jq -r '.plugins[] | select(type == "object") | .name' "$MANIFEST")" \
   || fail "could not read plugin names from $MANIFEST"
@@ -105,37 +79,29 @@ while IFS= read -r name; do
       | if ($c | length) != 1 then error("not exactly one card") else $c[0] end
     ' "$MANIFEST")" || fail "manifest does not hold exactly one card for $name"
 
-  url="$(jq -r '.source.url // empty' <<<"$card")"
-  [ -n "$url" ] || fail "$name has no source.url"
-  repo="$(repo_from_url "$url")" || fail "$name has an unresolvable source.url: $url"
+  source_fields="$(card_source <<<"$card")" || fail "could not resolve the source of $name"
+  # A non-whitespace separator preserves the empty path of a url entry.
+  IFS=$'\x1f' read -r _shape repo _path prefix _url <<<"${source_fields//$'\t'/$'\x1f'}"
 
-  rel="$(newest_release "$repo")" || fail "could not read releases for $repo"
+  rel="$(newest_release "$repo" "$prefix")" || fail "could not read releases for $repo"
   if [ -z "$rel" ]; then
     printf 'skip %s: no non-prerelease release yet\n' "$name" >&2
     continue
   fi
 
-  tag="$(jq -r '.tag_name' <<<"$rel")"
-  rel_id="$(jq -r '.id' <<<"$rel")"
-  is_draft="$(jq -r '.draft' <<<"$rel")"
-  version="${tag#v}"
+  IFS=$'\t' read -r tag rel_id is_draft <<<"$rel"
+  case "$tag" in "$prefix"*) ;; *) fail "tag $tag does not start with prefix $prefix" ;; esac
+  version="${tag#"$prefix"}"
 
   # Resolve the tag to a commit and require it to be on the default branch, so a
   # tag pushed to a side branch can never be pinned into the distribution manifest.
-  sha="$(gh api "repos/$repo/git/ref/tags/${tag}" --jq '.object.sha' 2>/dev/null)" \
-    || fail "could not resolve tag $tag in $repo"
-  # Annotated tags point at a tag object; dereference to the commit.
-  obj_type="$(gh api "repos/$repo/git/ref/tags/${tag}" --jq '.object.type' 2>/dev/null || echo commit)"
-  if [ "$obj_type" = tag ]; then
-    sha="$(gh api "repos/$repo/git/tags/$sha" --jq '.object.sha' 2>/dev/null)" \
-      || fail "could not dereference annotated tag $tag in $repo"
-  fi
-  default_branch="$(gh api "repos/$repo" --jq '.default_branch' 2>/dev/null)" \
+  sha="$(tag_commit "$repo" "$tag")" || fail "could not resolve tag $tag in $repo"
+  default_branch="$(default_branch "$repo")" \
     || fail "could not read the default branch of $repo"
   # A failed compare read (403, 429, 5xx) is a read failure, never a verdict: it must exit
   # nonzero rather than fall into the not-an-ancestor branch and let the run report
   # "already matches" over a release it never actually checked.
-  compare_status="$(gh api "repos/$repo/compare/${default_branch}...${sha}" --jq '.status' 2>/dev/null)" \
+  compare_status="$(compare_status "$repo" "$default_branch" "$sha")" \
     || fail "could not compare $tag (${sha:0:8}) against $default_branch in $repo"
   case "$compare_status" in
     identical|behind) ;;
