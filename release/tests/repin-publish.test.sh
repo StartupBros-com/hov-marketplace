@@ -31,12 +31,14 @@ cat > "$TMP/bin/gh" <<'STUBGH'
 set -e
 [ "$1" = api ] || { printf 'unexpected gh command: %s\n' "$*" >&2; exit 1; }
 shift
-method=GET path='' jqexpr=''
+method=GET path='' jqexpr='' paginate=false fields=''
 while [ $# -gt 0 ]; do
   case "$1" in
     -X) method="$2"; shift 2 ;;
     --jq) jqexpr="$2"; shift 2 ;;
-    -F|-f|-H) shift 2 ;;
+    --paginate) paginate=true; shift ;;
+    -F|-f) fields="$fields $2"; shift 2 ;;
+    -H) shift 2 ;;
     *) path="$1"; shift ;;
   esac
 done
@@ -51,11 +53,16 @@ repo="${path#repos/acme/}"; name="${repo%%/*}"; rest="${repo#"$name"}"
 dir="$FIX/$name"
 [ -d "$dir" ] || { printf '{"message":"Not Found"}\n' >&2; exit 1; }
 case "$method $rest" in
-  'PATCH /releases/'*) printf 'PATCH %s\n' "$path" >> "$CALLS"; printf '{"draft":false}\n' | emit ;;
+  'PATCH /releases/'*) printf 'PATCH %s%s\n' "$path" "$fields" >> "$CALLS"; printf '{"draft":false}\n' | emit ;;
   'GET /releases/'*)
     [ -s "$dir/release.json" ] || { printf '{"message":"Not Found"}\n' >&2; exit 1; }
     emit < "$dir/release.json" ;;
-  'GET /releases?per_page=100') emit < "$dir/releases.json" ;;
+  'GET /releases?per_page=100')
+    if [ -f "$dir/page-1.json" ]; then
+      if [ "$paginate" = true ]; then
+        for page in "$dir"/page-*.json; do cat "$page"; done
+      else cat "$dir/page-1.json"; fi
+    else emit < "$dir/releases.json"; fi ;;
   'GET /git/ref/tags/'*) emit < "$dir/tagref.json" ;;
   'GET /compare/'*)
     status="$(cat "$dir/compare")"
@@ -115,7 +122,7 @@ pass 'an already-published release is reported and never patched'
 # --- a pinned, complete draft is published exactly once -----------------------
 reset; fixture widget true "[$UP,$UP]"; manifest "$TMP/m.json" widget
 run_publish GH_TOKEN=app-token MARKETPLACE_TOKEN=job-token || die 'publishing a matching draft failed'
-[ "$(cat "$CALLS")" = 'PATCH repos/acme/widget/releases/900' ] \
+[ "$(cat "$CALLS")" = 'PATCH repos/acme/widget/releases/900 draft=false' ] \
   || die "expected exactly one PATCH of release 900, got: $(cat "$CALLS")"
 grep -q '^published now widget: v2.0.0' "$TMP/out" || die 'the publish was not reported'
 pass 'a pinned draft whose card matches is published exactly once'
@@ -206,8 +213,78 @@ fixture gadget true '[]'
 jq '.[0].assets = []' "$FIX/gadget/releases.json" > "$FIX/gadget/r.json" && mv "$FIX/gadget/r.json" "$FIX/gadget/releases.json"
 manifest "$TMP/m.json" widget gadget
 if run_publish; then die 'a run with one failing plugin exited zero'; fi
-[ "$(cat "$CALLS")" = 'PATCH repos/acme/gadget/releases/900' ] \
+[ "$(cat "$CALLS")" = 'PATCH repos/acme/gadget/releases/900 draft=false' ] \
   || die "the healthy plugin was not published past the failing one: $(cat "$CALLS")"
 pass 'a failing plugin still lets the next plugin publish, and the run exits nonzero'
+
+# Every PATCH argument is recorded. A plugin's own repository keeps GitHub's default
+# (no latest argument at all); the shared repository is told make_latest=false, because
+# GitHub's default would hand the repository-wide badge to whichever plugin published last.
+reset; fixture widget true "[$UP,$UP]"; manifest "$TMP/m.json" widget
+run_publish || die 'url publish failed'
+[ "$(cat "$CALLS")" = 'PATCH repos/acme/widget/releases/900 draft=false' ] || die "url PATCH fields differ: $(cat "$CALLS")"
+pass 'a url publish sends draft=false and no make_latest argument'
+
+mono_fixture() { # <version> <assets> [card version]
+  reset
+  fixture mono true "$2"
+  jq --arg tag "gadget--v$1" '.tag_name = $tag' "$FIX/mono/release.json" > "$TMP/rel.json"
+  mv "$TMP/rel.json" "$FIX/mono/release.json"
+  jq -n --arg s "$SHA" --arg tag "gadget--v$1" --arg v "${3:-$1}" '{plugins:[{
+    name:"gadget",source:{source:"git-subdir",url:"https://github.com/acme/mono.git",path:"plugins/gadget",sha:$s},
+    metadata:{version:$v,releaseTag:$tag,releaseId:900}}]}' > "$TMP/m.json"
+  printf '[]\n' > "$FIX/mono/releases.json"
+}
+mono_fixture 1.2.3 '[]'
+run_publish || die 'git-subdir publish failed'
+[ "$(cat "$CALLS")" = 'PATCH repos/acme/mono/releases/900 draft=false make_latest=false' ] || die "git-subdir PATCH fields differ: $(cat "$CALLS")"
+if grep -q 'make_latest=true' "$CALLS"; then die 'git-subdir publish claimed latest'; fi
+pass 'a git-subdir publish sends draft=false and make_latest=false, never make_latest=true'
+
+for bad_version in gadget--1.2.3 v1.2.3; do
+  mono_fixture 1.2.3 '[]' "$bad_version"
+  if run_publish; then die "accepted prefixed card version $bad_version"; fi
+  [ ! -s "$CALLS" ] || die 'invalid version published'
+  grep -Fq 'prefix gadget--v' "$TMP/err" || die 'version refusal omitted prefix'
+  pass "git-subdir version $bad_version is refused with its prefix and no PATCH"
+done
+
+# The prefix guard itself, not only the version comparison behind it: a git-subdir card
+# whose version and tag agree but carry no prefix is refused by name, before any PATCH.
+mono_fixture 1.2.3 '[]'
+jq '.tag_name = "v1.2.3"' "$FIX/mono/release.json" > "$TMP/rel.json"
+mv "$TMP/rel.json" "$FIX/mono/release.json"
+jq '.plugins[0].metadata.releaseTag = "v1.2.3"' "$TMP/m.json" > "$TMP/m2.json"
+mv "$TMP/m2.json" "$TMP/m.json"
+if run_publish; then die 'accepted an unprefixed tag on a git-subdir card'; fi
+[ ! -s "$CALLS" ] || die 'unprefixed tag published'
+grep -Fq 'tag v1.2.3 does not start with prefix gadget--v' "$TMP/err" || die 'prefix guard not reached'
+pass 'a git-subdir release tagged v1.2.3 is refused by the prefix guard before the version check'
+
+mono_fixture 1.0.0 '[]'
+jq -n --argjson assets "[$UP,$UP]" '[{id:800,tag_name:"widget--v3.0.0",draft:false,prerelease:false,published_at:"2026-08-01",assets:$assets}]' > "$FIX/mono/releases.json"
+run_publish || die 'other family raised asset floor'
+grep -Fxq 'PATCH repos/acme/mono/releases/900 draft=false make_latest=false' "$CALLS" || die 'zero-floor release not published'
+pass 'other plugins published assets do not raise the gadget floor above zero'
+
+mono_fixture 2.0.0 "[$UP]"
+jq -n --argjson assets "[$UP,$UP]" '[{id:800,tag_name:"gadget--v1.0.0",draft:false,prerelease:false,published_at:"2026-08-01",assets:$assets}]' > "$FIX/mono/releases.json"
+run_publish || die 'incomplete same-family assets should wait'
+[ ! -s "$CALLS" ] || die 'same-family floor was ignored'
+grep -q 'previous release had 2' "$TMP/out" || die 'wrong same-family asset floor'
+pass 'a gadget draft with one asset waits for the two-asset gadget floor'
+mv "$FIX/mono/releases.json" "$FIX/mono/page-2.json"
+printf '[]\n' > "$FIX/mono/page-1.json"
+run_publish || die 'page-two asset floor failed'
+[ ! -s "$CALLS" ] || die 'page-two asset floor ignored'
+grep -q 'previous release had 2' "$TMP/out" || die 'wrong page-two asset floor'
+pass 'the published floor release is honoured when it appears only on page two'
+
+mono_fixture 2.0.0 '[]'
+rm "$FIX/mono/releases.json"
+if run_publish; then die 'an unreadable asset floor was treated as zero'; fi
+[ ! -s "$CALLS" ] || die 'published over an unreadable asset floor'
+grep -q 'could not read the published releases of acme/mono' "$TMP/err" || die 'asset floor read failure not named'
+pass 'an asset floor read failure fails the plugin without publishing'
 
 printf '%s repin publish checks passed\n' "$PASS"

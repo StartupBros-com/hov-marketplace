@@ -18,7 +18,7 @@ trap 'rm -rf "$TMP"' EXIT
 PASS=0
 FAIL=0
 pass() { printf 'ok - %s\n' "$1"; PASS=$((PASS + 1)); }
-die() { printf 'not ok - %s\n' "$1" >&2; FAIL=$((FAIL + 1)); }
+die() { printf 'not ok - %s\n' "$1" >&2; exit 1; }
 
 # Sourcing must not run the driver, or every test would trip the usage guard.
 # shellcheck source=/dev/null
@@ -207,6 +207,72 @@ for bad in "--old $OLD --new $OLD" "--old abc1234 --new $NEW" "--new $NEW" \
     pass "refused: $bad"
   fi
 done
+
+# --- complete driver: shared checkouts roll once, at the root only ------------
+CLONES="$TMP/clones"
+mkdir -p "$CLONES"
+make_clone() {
+  local name="$1" seed="$TMP/seed-$1"
+  mkdir -p "$seed/.github/workflows"
+  printf 'jobs:\n  announce:\n    uses: StartupBros-com/hov-marketplace/.github/workflows/hov-tool-drop-announce.yml@%s\n' "$OLD" > "$seed/.github/workflows/release-train.yml"
+  if [ "$name" = mono ]; then
+    mkdir -p "$seed/plugins/gadget/.github/workflows"
+    cp "$seed/.github/workflows/release-train.yml" "$seed/plugins/gadget/.github/workflows/release-train.yml"
+  fi
+  git -C "$seed" init -q -b main || die 'fixture init failed'
+  git -C "$seed" config user.name Fixture
+  git -C "$seed" config user.email fixture@example.com
+  git -C "$seed" config commit.gpgsign false
+  git -C "$seed" config core.hooksPath /dev/null
+  git -C "$seed" add . || die 'fixture add failed'
+  git -C "$seed" commit -qm fixture || die 'fixture commit failed'
+  git clone -q --bare "$seed" "$TMP/$name-origin.git" || die 'fixture origin failed'
+  git clone -q -b main "$TMP/$name-origin.git" "$CLONES/$name" || die 'fixture clone failed'
+}
+make_clone mono
+make_clone widget
+jq -n '{plugins:[
+  {name:"gadget",source:{source:"git-subdir",url:"https://github.com/acme/mono.git",path:"plugins/gadget"}},
+  {name:"gizmo",source:{source:"git-subdir",url:"https://github.com/acme/mono.git",path:"plugins/gizmo"}},
+  {name:"widget",source:{source:"url",url:"https://github.com/acme/widget.git"}}
+]}' > "$TMP/manifest.json"
+run_main() {
+  MANIFEST="$TMP/manifest.json" bash "$ROOT/release/scripts/announce-pin-roll.sh" \
+    --root "$CLONES" --old "$OLD" --new "$NEW" --apply "$@" >"$TMP/main-out" 2>"$TMP/main-err"
+}
+run_main || die "shared roll failed: $(cat "$TMP/main-err")"
+grep -Fq "@$NEW" "$CLONES/mono/.github/workflows/release-train.yml" || die 'shared root not rewritten'
+grep -Fq "@$OLD" "$CLONES/mono/plugins/gadget/.github/workflows/release-train.yml" || die 'nested workflow was rewritten'
+grep -Fq "@$NEW" "$CLONES/widget/.github/workflows/release-train.yml" || die 'url checkout not rewritten'
+[ "$(grep -c 'rewrote:' "$TMP/main-out")" -eq 2 ] || die 'shared checkout processed twice'
+grep -Fxq '2 to roll or rolled, 0 already current, 0 refused' "$TMP/main-out" || die 'shared summary counted cards instead of checkouts'
+pass 'main rolls the shared root once, leaves nested workflows untouched and rolls the url checkout'
+
+cp "$TMP/seed-mono/.github/workflows/release-train.yml" "$CLONES/mono/.github/workflows/release-train.yml"
+printf 'jobs:\n  announce:\n    uses: StartupBros-com/hov-marketplace/.github/workflows/hov-tool-drop-announce.yml@%s\n' "$NEW" > "$CLONES/mono/.github/workflows/second.yml"
+if run_main; then die 'mixed shared root pins accepted'; fi
+grep -q 'REFUSED  pins 2 different shas:' "$TMP/main-out" || die 'mixed root pins not named'
+grep -Fq "@$OLD" "$CLONES/mono/.github/workflows/release-train.yml" || die 'mixed root was rewritten'
+pass 'main refuses a shared checkout with two root workflows pinning different shas'
+rm "$CLONES/mono/.github/workflows/second.yml"
+cp "$TMP/seed-widget/.github/workflows/release-train.yml" "$CLONES/widget/.github/workflows/release-train.yml"
+run_main --only gizmo || die 'only gizmo failed'
+grep -Fq "@$NEW" "$CLONES/mono/.github/workflows/release-train.yml" || die 'only gizmo missed shared root'
+grep -Fq "@$OLD" "$CLONES/widget/.github/workflows/release-train.yml" || die 'only gizmo touched widget'
+grep -Fq "@$OLD" "$CLONES/mono/plugins/gadget/.github/workflows/release-train.yml" || die 'only gizmo touched nested workflow'
+grep -Fxq '1 to roll or rolled, 0 already current, 0 refused' "$TMP/main-out" || die 'only gizmo summary differs'
+pass '--only gizmo selects its card name and processes only the shared checkout'
+
+# A shared checkout whose only old pin sits outside release-train.yml is refused, never
+# reported as rolled: the root-only restriction must not hide an unrolled checkout.
+printf 'jobs:\n  noop:\n    runs-on: ubuntu-24.04\n' > "$CLONES/mono/.github/workflows/release-train.yml"
+printf 'jobs:\n  announce:\n    uses: StartupBros-com/hov-marketplace/.github/workflows/hov-tool-drop-announce.yml@%s\n' "$OLD" > "$CLONES/mono/.github/workflows/other.yml"
+git -C "$CLONES/mono" add .github/workflows/other.yml .github/workflows/release-train.yml
+if run_main --only gadget; then die 'an old pin outside release-train.yml was accepted'; fi
+grep -q 'REFUSED  pins .* outside .github/workflows/release-train.yml' "$TMP/main-out" || die 'misplaced shared pin not named'
+grep -Fq "@$OLD" "$CLONES/mono/.github/workflows/other.yml" || die 'misplaced shared pin was rewritten'
+grep -Fxq '0 to roll or rolled, 0 already current, 1 refused' "$TMP/main-out" || die 'misplaced pin summary differs'
+pass 'a shared checkout whose old pin is outside release-train.yml is refused and left untouched'
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

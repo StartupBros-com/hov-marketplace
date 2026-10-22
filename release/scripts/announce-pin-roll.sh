@@ -124,14 +124,9 @@ roll_candidates() { # <dir> <pin> <prev> <old> <new>
   fi
 }
 
-# owner/repo from a canonical card source url, refused rather than guessed — the same rule
-# as repin-reconcile.
-repo_from_url() {
-  local url="$1" path
-  case "$url" in https://github.com/*) path="${url#https://github.com/}" ;; *) return 1 ;; esac
-  path="${path%.git}"
-  case "$path" in */*/*|'') return 1 ;; */*) printf '%s\n' "$path" ;; *) return 1 ;; esac
-}
+# One rule for shape, repo, path and prefix instead of three copies.
+# shellcheck source=release/scripts/card-source.sh
+. "$(dirname "${BASH_SOURCE[0]}")/card-source.sh"
 
 # Every announce pin a checkout carries, deduplicated. Scans the whole workflows directory
 # rather than assuming release-train.yml, so a pin in any workflow file is found.
@@ -174,14 +169,19 @@ main() {
   [ -s "$MANIFEST" ] || fail "manifest not found: $MANIFEST"
 
   local rolled=0 current=0 refused=0
-  local url repo name dir pins pin_count pin rel changed c candidates
-  while IFS= read -r url; do
-    [ -n "$url" ] || continue
-    repo="$(repo_from_url "$url")" || fail "unresolvable source url: $url"
-    name="${repo##*/}"
+  local card source_fields shape repo _path _prefix _url name dir pins pin_count pin rel changed c candidates
+  local processed=""
+  while IFS= read -r card; do
+    name="$(jq -r '.name' <<<"$card")"
     [ -z "$ONLY" ] || [ "$ONLY" = "$name" ] || continue
+    source_fields="$(card_source <<<"$card")" || fail "could not resolve the source of $name"
+    IFS=$'\x1f' read -r shape repo _path _prefix _url <<<"${source_fields//$'\t'/$'\x1f'}"
 
-    dir="$ROOT/$name"
+    dir="$ROOT/${repo##*/}"
+    if [ "$shape" = git-subdir ]; then
+      case " $processed " in *" $dir "*) continue ;; esac
+    fi
+    processed="$processed $dir"
     if [ ! -d "$dir/.git" ]; then
       printf '%-16s REFUSED  no clone at %s\n' "$name" "$dir"
       refused=$((refused + 1)); continue
@@ -218,9 +218,17 @@ main() {
     fi
 
     candidates="$(roll_candidates "$dir" "$pin" "$PREV_SHA" "$OLD_SHA" "$NEW_SHA")"
+    if [ "$shape" = git-subdir ]; then
+      candidates="$(printf '%s\n' "$candidates" | grep -Fx '.github/workflows/release-train.yml' || true)"
+    fi
     if [ -z "$candidates" ]; then
       if [ "$pin" = "$NEW_SHA" ]; then
         printf '%-16s ok       already rolled\n' "$name"; current=$((current + 1))
+      elif [ "$shape" = git-subdir ]; then
+        # The old pin sits somewhere a shared checkout never rolls. Reporting that as
+        # "nothing to rewrite" would leave the checkout on the old sha with a clean exit.
+        printf '%-16s REFUSED  pins %s outside .github/workflows/release-train.yml, the only file a shared checkout rolls\n' "$name" "${pin:0:7}"
+        refused=$((refused + 1))
       else
         printf '%-16s ok       nothing to rewrite\n' "$name"
       fi
@@ -244,7 +252,7 @@ main() {
     fi
     printf '%-16s rewrote:%s\n' "$name" "$changed"
     rolled=$((rolled + 1))
-  done < <(jq -r '.plugins[]? | .source.url // empty' "$MANIFEST")
+  done < <(jq -c '.plugins[]? | select(type == "object")' "$MANIFEST")
 
   printf '\n%s to roll or rolled, %s already current, %s refused\n' "$rolled" "$current" "$refused"
   if [ "$MODE" = report ]; then

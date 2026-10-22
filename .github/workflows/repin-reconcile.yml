@@ -4,6 +4,8 @@ name: Repin reconcile
 # released: open a repin PR whenever the two disagree, ask GitHub to merge it once
 # its required checks pass, close the repin PRs it superseded, and publish the
 # staged draft release a card on main already names.
+# A migration dispatch changes one entry to git-subdir through the same PR flow.
+# HOV_RELEASE_APP_REPOSITORIES configures the release App token repository list.
 #
 # The card still changes only through a PR on main that passes the required
 # checks; this workflow pushes nothing to main and holds no bypass. What it
@@ -49,6 +51,10 @@ on:
     - cron: '8,23,38,53 * * * *'
   workflow_dispatch:
     inputs:
+      migrate_plugin:
+        description: 'Migrate one plugin to a git-subdir entry pinned to its newest prefixed release in the shared repository (optional; opens the PR the reconciler would)'
+        required: false
+        type: string
       only_plugin:
         description: 'Restrict to one plugin name (optional)'
         required: false
@@ -78,8 +84,13 @@ jobs:
         env:
           HOV_RELEASE_APP_ID: ${{ secrets.HOV_RELEASE_APP_ID }}
           HOV_RELEASE_APP_PRIVATE_KEY: ${{ secrets.HOV_RELEASE_APP_PRIVATE_KEY }}
+          APP_REPOSITORIES: ${{ vars.HOV_RELEASE_APP_REPOSITORIES }}
         run: |
           if [ -n "$HOV_RELEASE_APP_ID" ] && [ -n "$HOV_RELEASE_APP_PRIVATE_KEY" ]; then
+            if [ -z "$APP_REPOSITORIES" ]; then
+              echo "::error::repository variable HOV_RELEASE_APP_REPOSITORIES is empty; set it to the comma-separated plugin repositories the release App token is minted for"
+              exit 1
+            fi
             echo "have_app=true" >> "$GITHUB_OUTPUT"
           else
             echo "have_app=false" >> "$GITHUB_OUTPUT"
@@ -89,8 +100,9 @@ jobs:
       # Plugin-repositories-only token. GitHub lists another repository's DRAFT releases only
       # to identities with push access, so the token must carry contents: write even though
       # this workflow only reads with it (verified 2026-09-06: a contents: read token saw no
-      # draft and reported "already matches"). It lives for this job, is scoped to the nine
-      # plugin repositories, and the App itself holds no permission on this repository.
+      # draft and reported "already matches"). It lives for this job; its list is the repository
+      # variable HOV_RELEASE_APP_REPOSITORIES, so adding a plugin, freezing the per-plugin
+      # repositories or renaming this repository changes a setting and not this workflow.
       - name: Mint a release App token for the plugin repositories (draft-visible)
         if: steps.identity.outputs.have_app == 'true'
         id: app
@@ -99,7 +111,7 @@ jobs:
           app-id: ${{ secrets.HOV_RELEASE_APP_ID }}
           private-key: ${{ secrets.HOV_RELEASE_APP_PRIVATE_KEY }}
           owner: StartupBros-com
-          repositories: harness-vet,token-eater,skill-tuner,wsl-cdp,memory-dream,design-rails,rent-check,papercut,pro-gate,sign-it
+          repositories: ${{ vars.HOV_RELEASE_APP_REPOSITORIES }}
           permission-contents: write
           permission-metadata: read
 
@@ -108,10 +120,11 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app.outputs.token || github.token }}
           ONLY_PLUGIN: ${{ inputs.only_plugin }}
+          MIGRATE_PLUGIN: ${{ inputs.migrate_plugin }}
           PLAN_FILE: ${{ runner.temp }}/repin-plan.tsv
         run: |
           set -euo pipefail
-          ./release/scripts/repin-reconcile.sh
+          if [ -n "$MIGRATE_PLUGIN" ]; then ./release/scripts/repin-migrate.sh "$MIGRATE_PLUGIN"; else ./release/scripts/repin-reconcile.sh; fi
           if [ -s "$PLAN_FILE" ]; then
             echo "drift=true" >> "$GITHUB_OUTPUT"
             # Content-addressed branch name: the SAME drift on the SAME main always
@@ -154,6 +167,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token || github.token }}
           HAVE_BOT: ${{ steps.bot_identity.outputs.have_bot }}
+          MIGRATE_PLUGIN: ${{ inputs.migrate_plugin }}
           PLAN_FILE: ${{ runner.temp }}/repin-plan.tsv
           BRANCH: repin/auto-${{ steps.reconcile.outputs.key }}
         run: |
@@ -181,6 +195,9 @@ jobs:
               printf '| %s | %s | `%s` | %s | `%s` | %s |\n' \
                 "$name" "$version" "$tag" "$rel_id" "${sha:0:12}" "$state"
             done < "$PLAN_FILE"
+            if [ -n "$MIGRATE_PLUGIN" ]; then
+              printf '\nThis PR migrates `%s` from a `url` entry to a `git-subdir` entry pinned to its newest prefixed release in the shared repository (dispatched by hand; the reconciler never changes an entry'"'"'s shape).\n' "$MIGRATE_PLUGIN"
+            fi
             printf '\nRe-running the reconciler on this same drift and main is a no-op: the branch name is derived from both.\n'
             printf '\nThe reconciler requests auto-merge on this PR and merges it once the required checks pass. A plugin listed as **draft** is published by the next reconcile run after the merge.\n'
           } > "$RUNNER_TEMP/pr-body.md"
@@ -209,7 +226,7 @@ jobs:
           BOT_SLUG: ${{ steps.bot.outputs.app-slug }}
           DESIRED_BRANCH: ${{ steps.reconcile.outputs.drift == 'true' && format('repin/auto-{0}', steps.reconcile.outputs.key) || '' }}
           EXPECTED_BLOB: ${{ steps.reconcile.outputs.blob }}
-          ONLY_PLUGIN: ${{ inputs.only_plugin }}
+          ONLY_PLUGIN: ${{ inputs.migrate_plugin || inputs.only_plugin }}
         run: ./release/scripts/repin-land.sh
 
       # Runs even when an earlier step failed: publishing a draft main already pins
@@ -222,7 +239,7 @@ jobs:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           MARKETPLACE_REPO: ${{ github.repository }}
           MARKETPLACE_TOKEN: ${{ github.token }}
-          ONLY_PLUGIN: ${{ inputs.only_plugin }}
+          ONLY_PLUGIN: ${{ inputs.migrate_plugin || inputs.only_plugin }}
           MANIFEST: ${{ runner.temp }}/main-manifest.json
         run: |
           set -euo pipefail

@@ -27,6 +27,8 @@ jobs:
           release/scripts/latest-stable-release.sh
           release/scripts/provision-ci-tools.sh
           release/tests/provision-ci-tools.test.sh
+          release/scripts/card-source.sh
+          release/scripts/repin-migrate.sh
           release/scripts/repin-reconcile.sh
           release/scripts/repin-land.sh
           release/scripts/repin-publish.sh
@@ -35,6 +37,9 @@ jobs:
           release/tests/tool-drop-announce-retry.test.sh
           release/tests/latest-stable-release.test.sh
           release/tests/notes-summary.test.sh
+          release/tests/card-source.test.sh
+          release/tests/repin-migrate.test.sh
+          release/tests/repin-convergence.test.sh
           release/tests/repin-reconcile.test.sh
           release/tests/repin-land.test.sh
           release/tests/repin-publish.test.sh
@@ -63,6 +68,12 @@ jobs:
         run: bash ./release/tests/repin-publish.test.sh
       - name: Run announce pin roll tests
         run: bash ./release/tests/announce-pin-roll.test.sh
+      - name: Run card source tests
+        run: bash ./release/tests/card-source.test.sh
+      - name: Run repin migrate tests
+        run: bash ./release/tests/repin-migrate.test.sh
+      - name: Run repin convergence tests
+        run: bash ./release/tests/repin-convergence.test.sh
 
   public-pr-syntax:
     name: Public PR data check
