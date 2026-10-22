@@ -4,6 +4,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+# An unguarded command that fails under set -e would otherwise end the suite with no
+# reason in the CI log; name the line and show the stderr the last case captured.
+trap 'printf "not ok - unguarded command failed at line %s\n" "$LINENO" >&2; [ ! -s "$TMP/err" ] || cat "$TMP/err" >&2' ERR
 PASS=0
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 pass() { printf 'ok - %s\n' "$*"; PASS=$((PASS + 1)); }
@@ -32,6 +35,9 @@ git init -q --bare "$TMP/origin.git"
 git init -q -b main "$TMP/repo"; cd "$TMP/repo"
 git remote add origin "$TMP/origin.git"
 export GITHUB_OUTPUT="$TMP/output"
+# The runner exports the ref name of the run; a pull_request run of this suite would
+# otherwise trip the side-branch guard. Pin the value a push to main carries.
+export GITHUB_REF_NAME=main
 printf 'seed\n' >seed; commit
 bash "$SCRIPT" >"$TMP/out"
 { [ ! -s "$TMP/out" ] && grep -Fxq due=false "$GITHUB_OUTPUT"; } || die 'root commit due'
