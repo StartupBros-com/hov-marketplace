@@ -19,6 +19,7 @@ jobs:
         uses: actions/checkout@ac593985615ec2ede58e132d2e21d2b1cbd6127c
         with:
           fetch-depth: 0
+          persist-credentials: false
       - name: Provision pinned CI tools
         run: ./release/scripts/provision-ci-tools.sh
       - name: Lint Tool Drop announce scripts
@@ -44,6 +45,31 @@ jobs:
           release/tests/repin-land.test.sh
           release/tests/repin-publish.test.sh
           release/tests/announce-pin-roll.test.sh
+          release/scripts/plugin-tag.sh
+          release/scripts/ci-changed-plugins.sh
+          release/scripts/plugin-ci.sh
+          release/scripts/ci-aggregate.sh
+          release/scripts/ci-repo-checks.sh
+          release/scripts/auto-release-decide.sh
+          release/scripts/auto-release-tag.sh
+          release/scripts/release-stage.sh
+          release/scripts/release-gate.sh
+          release/scripts/release-train-verify.sh
+          release/scripts/publish-staged.sh
+          release/scripts/check-release-notes.sh
+          release/tests/plugin-tag.test.sh
+          release/tests/ci-changed-plugins.test.sh
+          release/tests/plugin-ci.test.sh
+          release/tests/ci-aggregate.test.sh
+          release/tests/ci-repo-checks.test.sh
+          release/tests/auto-release-decide.test.sh
+          release/tests/auto-release-tag.test.sh
+          release/tests/release-stage.test.sh
+          release/tests/release-gate.test.sh
+          release/tests/release-train-verify.test.sh
+          release/tests/publish-staged.test.sh
+          release/tests/check-release-notes.test.sh
+          release/tests/root-workflows.test.sh
       - name: Test pinned CI tool provisioning without network access
         run: bash ./release/tests/provision-ci-tools.test.sh
       - name: Validate marketplace without network access
@@ -75,6 +101,35 @@ jobs:
       - name: Run repin convergence tests
         run: bash ./release/tests/repin-convergence.test.sh
 
+      - name: Run plugin tag tests
+        run: bash ./release/tests/plugin-tag.test.sh
+      - name: Run ci changed plugins tests
+        run: bash ./release/tests/ci-changed-plugins.test.sh
+      - name: Run plugin ci tests
+        run: bash ./release/tests/plugin-ci.test.sh
+      - name: Run ci aggregate tests
+        run: bash ./release/tests/ci-aggregate.test.sh
+      - name: Run ci repo checks tests
+        run: bash ./release/tests/ci-repo-checks.test.sh
+      - name: Run auto release decide tests
+        run: bash ./release/tests/auto-release-decide.test.sh
+      - name: Run auto release tag tests
+        run: bash ./release/tests/auto-release-tag.test.sh
+      - name: Run release stage tests
+        run: bash ./release/tests/release-stage.test.sh
+      - name: Run release gate tests
+        run: bash ./release/tests/release-gate.test.sh
+      - name: Run release train verify tests
+        run: bash ./release/tests/release-train-verify.test.sh
+      - name: Run publish staged tests
+        run: bash ./release/tests/publish-staged.test.sh
+      - name: Run check release notes tests
+        run: bash ./release/tests/check-release-notes.test.sh
+      - name: Run root workflows tests
+        run: bash ./release/tests/root-workflows.test.sh
+      - name: Lint root workflows
+        run: actionlint -config-file .github/actionlint.yaml .github/workflows/plugins-ci.yml .github/workflows/auto-release.yml .github/workflows/release.yml .github/workflows/publish-staged-release.yml .github/workflows/release-train.yml
+
   public-pr-syntax:
     name: Public PR data check
     if: github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || github.event.pull_request.head.repo.fork != false)
@@ -99,6 +154,7 @@ jobs:
         uses: actions/checkout@ac593985615ec2ede58e132d2e21d2b1cbd6127c
         with:
           fetch-depth: 0
+          persist-credentials: false
       - name: Provision pinned CI tools
         run: ./release/scripts/provision-ci-tools.sh
       - name: Validate pinned source payloads

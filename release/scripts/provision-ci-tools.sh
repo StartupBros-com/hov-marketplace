@@ -31,9 +31,19 @@ printf '%s  %s\n' \
 tar -xzf "$archive" -C "$RUNNER_TEMP"
 cp "$RUNNER_TEMP/shellcheck-v0.11.0/shellcheck" "$bin_dir/shellcheck"
 
+archive="$RUNNER_TEMP/actionlint_1.7.12_linux_amd64.tar.gz"
+curl --fail --location --silent --show-error \
+  'https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz' \
+  --output "$archive"
+printf '%s  %s\n' \
+  '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8' \
+  "$archive" | sha256sum --check --status
+tar -xzf "$archive" -C "$RUNNER_TEMP" actionlint
+cp "$RUNNER_TEMP/actionlint" "$bin_dir/actionlint"
+
 # Select the verified tools here and in subsequent GitHub Actions steps.
 export PATH="$bin_dir:$PATH"
-for tool in jq yq shellcheck; do
+for tool in jq yq shellcheck actionlint; do
   printf 'Using %s\n' "$(command -v "$tool")"
   "$bin_dir/$tool" --version
 done

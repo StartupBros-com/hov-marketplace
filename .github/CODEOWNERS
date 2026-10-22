@@ -1,0 +1,10 @@
+# Code-owner review for release machinery, the manifest, every VERSION, the setup
+# entrypoint, hooks and the skill pack. The author is the only code owner; the
+# marketplace bot's manifest-only repin PRs are exempted by a ruleset bypass.
+/.github/            @StartupBros
+/release/            @StartupBros
+/.claude-plugin/     @StartupBros
+**/VERSION           @StartupBros
+/setup               @StartupBros
+/hooks/              @StartupBros
+/plugins/hovstack/   @StartupBros

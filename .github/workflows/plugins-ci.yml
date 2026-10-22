@@ -1,0 +1,76 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    name: changed plugins
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      plugins: ${{ steps.changes.outputs.plugins }}
+      any: ${{ steps.changes.outputs.any }}
+    steps:
+      - uses: actions/checkout@ac593985615ec2ede58e132d2e21d2b1cbd6127c
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: changes
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: release/scripts/ci-changed-plugins.sh "$BASE_SHA" "$HEAD_SHA" >> "$GITHUB_OUTPUT"
+
+  plugin:
+    name: ${{ matrix.plugin }}
+    needs: changes
+    if: needs.changes.outputs.any == 'true' && (github.event_name == 'push' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.repo.fork == false))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        plugin: ${{ fromJSON(needs.changes.outputs.plugins) }}
+    steps:
+      - uses: actions/checkout@ac593985615ec2ede58e132d2e21d2b1cbd6127c
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Provision pinned CI tools
+        run: release/scripts/provision-ci-tools.sh
+      - name: Check plugin contract and suites
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          PLUGIN: ${{ matrix.plugin }}
+        run: release/scripts/plugin-ci.sh "plugins/$PLUGIN"
+
+  ci:
+    name: ci
+    needs: [changes, plugin]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@ac593985615ec2ede58e132d2e21d2b1cbd6127c
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Provision pinned CI tools
+        run: release/scripts/provision-ci-tools.sh
+      - name: Require needed jobs and trusted plugin checks
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_REPO_IS_FORK: ${{ github.event.pull_request.head.repo.fork }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPO: ${{ github.repository }}
+          PLUGINS_TOUCHED: ${{ needs.changes.outputs.any }}
+        run: release/scripts/ci-aggregate.sh
+      - name: Check repository release policy
+        run: release/scripts/ci-repo-checks.sh

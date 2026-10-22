@@ -1,0 +1,8 @@
+# workflow-file<TAB>job-name: additional exact workflow basenames and job names
+# required by the release gate. Blank lines and comments are ignored.
+# The per-plugin job in plugins-ci.yml is implicit. The marketplace's own validation
+# (manifest integrity, the release script suites, policy) must be green at the release
+# commit before a draft is staged, so its always-run job is required here; the
+# variable-gated pinned-sources job may be skipped and is not. Append the staging
+# repository's CI line (ci.yml, setup, hooks, suites, secrets) when that workflow lands.
+validate.yml	Trusted syntax and policy
