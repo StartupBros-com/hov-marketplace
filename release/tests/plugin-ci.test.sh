@@ -93,4 +93,19 @@ reject 'missing plugins/a/VERSION' bash "$SCRIPT" plugins/a
 grep -Fq 'missing plugins/a/skills/a/SKILL.md' "$TMP/err" || die 'did not run all checks'
 pass 'missing files do not stop other checks'
 
+# The skill pack ships several skills and none named after itself; it still
+# needs at least one skill directly under skills/.
+plugin hovstack 0.1.0; rm -r plugins/hovstack/skills/hovstack
+mkdir -p plugins/hovstack/skills/alpha; printf 'fixture skill\n' >plugins/hovstack/skills/alpha/SKILL.md
+bash "$SCRIPT" plugins/hovstack >"$TMP/out" 2>"$TMP/err" || { cat "$TMP/err"; die 'skill pack without a self-named skill'; }
+pass 'the skill pack needs no skill named after itself'
+rm -r plugins/hovstack/skills/alpha; mkdir -p plugins/hovstack/skills/alpha/nested
+printf 'fixture skill\n' >plugins/hovstack/skills/alpha/nested/SKILL.md
+reject 'missing plugins/hovstack/skills/<skill>/SKILL.md' bash "$SCRIPT" plugins/hovstack
+pass 'a skill pack with no top-level skill is named'
+plugin b; rm plugins/b/skills/b/SKILL.md
+mkdir -p plugins/b/skills/other; printf 'fixture skill\n' >plugins/b/skills/other/SKILL.md
+reject 'missing plugins/b/skills/b/SKILL.md' bash "$SCRIPT" plugins/b
+pass 'only the skill pack is exempt from the self-named skill'
+
 printf '%s plugin-ci checks passed\n' "$PASS"

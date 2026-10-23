@@ -22,7 +22,10 @@ else failed=1; fi
 if manifest_name="$(plugin_manifest_name "$dir")"; then
   if [ "$manifest_name" = "$name" ]; then ok "$name manifest name matches directory"; else problem "$name manifest name $manifest_name does not match directory $name"; fi
 else failed=1; fi
-if [ -f "$dir/skills/$name/SKILL.md" ]; then ok "$name SKILL.md exists"; else problem "missing $dir/skills/$name/SKILL.md"; fi
+if is_skill_pack "$name"; then
+  if compgen -G "$dir/skills/*/SKILL.md" >/dev/null; then ok "$name ships at least one skill"; else problem "missing $dir/skills/<skill>/SKILL.md"; fi
+elif [ -f "$dir/skills/$name/SKILL.md" ]; then ok "$name SKILL.md exists"
+else problem "missing $dir/skills/$name/SKILL.md"; fi
 
 base="${BASE_SHA:-}"
 if [ -n "$base" ] && git cat-file -e "$base^{commit}" 2>/dev/null \

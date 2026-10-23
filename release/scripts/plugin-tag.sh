@@ -19,6 +19,10 @@ tag_plugin_version() {
 
 is_release_semver() { [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; }
 
+# The skill pack ships several skills as skills/<skill>/SKILL.md and none named
+# after itself; every other plugin's entry skill is skills/<name>/SKILL.md.
+is_skill_pack() { [ "$1" = hovstack ]; }
+
 plugin_manifest_name() {
   local file="$1/.claude-plugin/plugin.json"
   jq -er '.name | select(type == "string" and length > 0)' "$file" \
