@@ -379,8 +379,28 @@ add_subdir_plugin() {
   git -C "$MONOREPO" rev-parse HEAD
 }
 
+# add_pack_plugin VERSION: commits the skill pack in its real layout, several
+# skills under skills/<skill>/ and none named after the pack, tags
+# hovstack--vVERSION, publishes, prints the commit.
+add_pack_plugin() {
+  local version="$1" skill
+  local dir="$MONOREPO/plugins/hovstack"
+  mkdir -p "$dir/.claude-plugin"
+  jq -n --arg version "$version" '{name: "hovstack", version: $version}' >"$dir/.claude-plugin/plugin.json"
+  printf '%s\n' "$version" >"$dir/VERSION"
+  for skill in alpha beta; do
+    mkdir -p "$dir/skills/$skill"
+    printf '# fixture\n' >"$dir/skills/$skill/SKILL.md"
+  done
+  git -C "$MONOREPO" add plugins/hovstack
+  git -C "$MONOREPO" commit -qm "hovstack $version"
+  git -C "$MONOREPO" tag "hovstack--v$version"
+  publish_monorepo
+  git -C "$MONOREPO" rev-parse HEAD
+}
+
 SIGN_SHA="$(add_subdir_plugin sign-it 0.5.0)"
-PACK_SHA="$(add_subdir_plugin hovstack 0.1.0)"
+PACK_SHA="$(add_pack_plugin 0.1.0)"
 PRO_SUBDIR_SHA="$(add_subdir_plugin pro-gate 2.1.0)"
 
 # The url fixtures (token-eater 10, pro-gate 20) plus two git-subdir entries.
@@ -440,6 +460,36 @@ publish_monorepo
 expect_fail_reason "git-subdir plugins/<name>/VERSION must match the plugin manifest on main" "main plugins/sign-it/VERSION 9.9.9 differs from manifest 0.5.0" validate full
 printf '0.5.0\n' >"$MONOREPO/plugins/sign-it/VERSION"
 git -C "$MONOREPO" commit -qam 'restore sign-it lockstep'
+publish_monorepo
+
+# Negative: the skill pack's pin must carry at least one skill directly under
+# skills/; a SKILL.md two levels down does not count.
+git -C "$MONOREPO" rm -rq plugins/hovstack/skills
+mkdir -p "$MONOREPO/plugins/hovstack/skills/alpha/nested"
+printf '# fixture\n' >"$MONOREPO/plugins/hovstack/skills/alpha/nested/SKILL.md"
+git -C "$MONOREPO" add plugins/hovstack
+git -C "$MONOREPO" commit -qm 'hovstack with no top-level skill'
+publish_monorepo
+BARE_PACK_SHA="$(git -C "$MONOREPO" rev-parse HEAD)"
+write_mixed_manifest
+mutate_manifest --arg sha "$BARE_PACK_SHA" '(.plugins[] | select(.name == "hovstack") | .source.sha) = $sha'
+expect_fail_reason "skill pack pin with no top-level skill rejected" "plugin hovstack pin has no skill at plugins/hovstack/skills/<skill>/SKILL.md" validate full
+git -C "$MONOREPO" revert --no-edit HEAD >/dev/null
+publish_monorepo
+
+# Twin: only the pack is exempt. Any other git-subdir plugin still needs
+# skills/<name>/SKILL.md, even with another skill beside it.
+git -C "$MONOREPO" rm -q plugins/sign-it/skills/sign-it/SKILL.md
+mkdir -p "$MONOREPO/plugins/sign-it/skills/other"
+printf '# fixture\n' >"$MONOREPO/plugins/sign-it/skills/other/SKILL.md"
+git -C "$MONOREPO" add plugins/sign-it
+git -C "$MONOREPO" commit -qm 'sign-it without its own skill'
+publish_monorepo
+NO_SELF_SKILL_SHA="$(git -C "$MONOREPO" rev-parse HEAD)"
+write_mixed_manifest
+mutate_manifest --arg sha "$NO_SELF_SKILL_SHA" '(.plugins[] | select(.name == "sign-it") | .source.sha) = $sha'
+expect_fail_reason "a non-pack git-subdir pin without skills/<name>/SKILL.md rejected" "plugin sign-it pin is missing plugins/sign-it/skills/sign-it/SKILL.md" validate full
+git -C "$MONOREPO" revert --no-edit HEAD >/dev/null
 publish_monorepo
 
 # Negative: a prefixed tag on a commit that is not on main is reachable at

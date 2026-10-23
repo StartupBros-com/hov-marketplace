@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=release/scripts/plugin-tag.sh
+source "$SCRIPT_DIR/plugin-tag.sh"
+
 MODE="${1:-syntax}"
 MANIFEST="${MARKETPLACE_MANIFEST:-.claude-plugin/marketplace.json}"
 BASE_REF="${BASE_REF:-}"
@@ -359,6 +363,17 @@ monorepo_main_checkout() {
   printf '%s\n' "$dir"
 }
 
+# pin_has_pack_skill REPO SHA PATH: true when the pin carries at least one
+# PATH/skills/<skill>/SKILL.md directly under skills/.
+pin_has_pack_skill() {
+  local repo="$1" sha="$2" path="$3" file rest
+  while IFS= read -r file; do
+    rest="${file#"$path"/skills/}"
+    [[ "$rest" == */SKILL.md && "${rest%/SKILL.md}" != */* ]] && return 0
+  done < <(git -C "$repo" ls-tree -r --name-only "$sha" -- "$path/skills")
+  return 1
+}
+
 validate_remote_subdir_plugin() {
   local name="$1" url="$2" sha="$3" metadata_version="$4" metadata_tag="$5" path="$6"
   local remote repo manifest_json manifest_name manifest_version version_file release_workflow
@@ -382,7 +397,11 @@ validate_remote_subdir_plugin() {
   [[ "$manifest_name" == "$name" ]] || fail "plugin $name pinned manifest name is $manifest_name"
   is_semver "$manifest_version" || fail "plugin $name pinned manifest version is not semver"
   [[ "$manifest_version" == "$metadata_version" ]] || fail "plugin $name marketplace and pinned manifest versions differ"
-  git -C "$repo" cat-file -e "$sha:$path/skills/$name/SKILL.md" 2>/dev/null || fail "plugin $name pin is missing $path/skills/$name/SKILL.md"
+  if is_skill_pack "$name"; then
+    pin_has_pack_skill "$repo" "$sha" "$path" || fail "plugin $name pin has no skill at $path/skills/<skill>/SKILL.md"
+  else
+    git -C "$repo" cat-file -e "$sha:$path/skills/$name/SKILL.md" 2>/dev/null || fail "plugin $name pin is missing $path/skills/$name/SKILL.md"
+  fi
 
   # Lockstep on main, where the next bump is read: the plugin's VERSION equals
   # its manifest version. The per-repo root requirements (root VERSION, root
